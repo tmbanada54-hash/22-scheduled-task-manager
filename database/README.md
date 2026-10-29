@@ -30,7 +30,7 @@ prevents multiple unfinished runs of one task.
   instead of discarding it; repair the data from a backup before retrying. The old schema
   is retained as [`migrations/001_sqlite_backend_v1.sql`](migrations/001_sqlite_backend_v1.sql).
 - Back up the SQLite database **with its WAL** using SQLite's online backup API
-  before upgrades; see the [deployment guide](../README.md#backup). Test restores.
+  before upgrades; see the [backup guide](../README.md#storage-backup-and-other-deployments). Test restores.
 - The old database-team SQLite prototype is unversioned and has an incompatible
   `tasks`/`executions`/`retry_queue` model. It is preserved at
   [`design/schema.sqlite-proposed.sql`](design/schema.sqlite-proposed.sql).
