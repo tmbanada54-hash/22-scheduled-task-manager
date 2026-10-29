@@ -1,0 +1,12 @@
+{
+  "name": "tickwise-scheduled-task-manager",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Browser integration tests for the Tickwise dashboard",
+  "scripts": {
+    "test:ui": "node frontend-tests/smoke.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

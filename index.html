@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tickwise — Scheduled Task Manager</title>
+  <meta
+    name="description"
+    content="Tickwise schedules recurring tasks, shows the next execution time, records every outcome and retries failures. A hackathon MVP built with plain HTML, CSS and vanilla JS."
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <noscript>
+    <p style="padding:1rem;font-family:system-ui">Tickwise needs JavaScript enabled to run its scheduler dashboard.</p>
+  </noscript>
+
+  <div class="app-shell">
+    <!-- ================= Top bar (persistent across views) ================= -->
+    <header class="topbar">
+      <div class="wrap topbar__inner">
+        <a class="brand" href="#/" aria-label="Tickwise home">
+          <span class="brand__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7.5V12l3 1.8" />
+            </svg>
+          </span>
+          <span class="brand__text">Tickwise<span class="brand__dot">.</span></span>
+        </a>
+
+        <div class="topbar__actions">
+          <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle color theme" title="Toggle light / dark">
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5Z" />
+            </svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4.2" />
+              <path d="M12 2v2.2M12 19.8V22M2 12h2.2M19.8 12H22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6" />
+            </svg>
+          </button>
+          <!-- Workspace access controls are filled by app.js -->
+          <div class="auth-slot" id="authSlot"></div>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ==================================================================
+           VIEW 1 — LANDING
+           ================================================================== -->
+      <section class="view" id="view-landing" data-view="landing">
+        <div class="wrap hero">
+          <div class="hero__copy">
+            <span class="pill">
+              <span class="pill__dot" aria-hidden="true"></span>
+              Hackathon MVP · 4-day build
+            </span>
+            <h1 class="hero__title">
+              Recurring tasks made <span class="gradient-text">simple&nbsp;to&nbsp;manage.</span>
+            </h1>
+            <p class="hero__lede">
+              Schedule any job by interval in seconds, watch the next execution count down live,
+              keep a full audit trail of every run, and let automatic retries handle the flaky ones.
+            </p>
+            <div class="hero__cta">
+              <a class="btn btn--primary btn--lg" href="#/auth">
+                Get started
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </a>
+              <a class="btn btn--ghost btn--lg" href="#/dashboard">View live dashboard</a>
+            </div>
+            <ul class="hero__proof">
+              <li><strong>5s</strong><span>live polling</span></li>
+              <li><strong>2×</strong><span>auto retries</span></li>
+              <li><strong>100%</strong><span>run history</span></li>
+            </ul>
+          </div>
+
+          <!-- Decorative "scheduler monitor" built only with CSS -->
+          <div class="hero__visual" aria-hidden="true">
+            <div class="monitor">
+              <div class="monitor__head">
+                <span class="monitor__title">Scheduler monitor</span>
+                <span class="monitor__live"><span class="dot"></span>live</span>
+              </div>
+
+              <div class="monitor__row">
+                <div class="monitor__meta">
+                  <span class="monitor__name">Ping payment gateway</span>
+                  <span class="monitor__sub">every 30s · HTTP Ping</span>
+                </div>
+                <span class="monitor__badge monitor__badge--ok">success</span>
+                <div class="monitor__bar"><i style="--dur: 3.2s"></i></div>
+              </div>
+
+              <div class="monitor__row">
+                <div class="monitor__meta">
+                  <span class="monitor__name">Nightly database snapshot</span>
+                  <span class="monitor__sub">every 1h · Log Message</span>
+                </div>
+                <span class="monitor__badge monitor__badge--warn">retry 1/2</span>
+                <div class="monitor__bar"><i style="--dur: 5.4s; --delay: -1.2s"></i></div>
+              </div>
+
+              <div class="monitor__row">
+                <div class="monitor__meta">
+                  <span class="monitor__name">Slack standup reminder</span>
+                  <span class="monitor__sub">every 1d · Log Message</span>
+                </div>
+                <span class="monitor__badge monitor__badge--idle">paused</span>
+                <div class="monitor__bar monitor__bar--idle"><i style="--dur: 8s; --delay: -4s"></i></div>
+              </div>
+
+              <div class="monitor__foot">
+                <span>Next run in <strong>00:00:24</strong></span>
+                <span class="monitor__spark">
+                  <i style="--h: 40%"></i><i style="--h: 70%"></i><i style="--h: 55%"></i>
+                  <i style="--h: 90%"></i><i style="--h: 62%"></i><i style="--h: 78%"></i>
+                  <i style="--h: 46%"></i><i style="--h: 84%"></i>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature grid -->
+        <div class="wrap section">
+          <div class="section__head">
+            <h2>Everything the MVP needs, nothing it doesn't</h2>
+            <p>One clear flow: define a task → the scheduler runs it → every outcome is recorded.</p>
+          </div>
+          <div class="features">
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9" /><path d="M12 7v5l3.5 2" /><path d="M17 3.5 21 6l-4 2.5z" /></svg>
+              </span>
+              <h3>Second-level intervals</h3>
+              <p>Any interval from 5 seconds to a full day, with the next run time computed and displayed for every task.</p>
+            </article>
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4v4h-4" /></svg>
+              </span>
+              <h3>Retries on failure</h3>
+              <p>A failed execution is retried up to the configured limit, and the attempt count is stored with the run.</p>
+            </article>
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10" /></svg>
+              </span>
+              <h3>Full execution history</h3>
+              <p>Success or failure, timestamp, duration, attempt count and status — per task, in a modal.</p>
+            </article>
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg>
+              </span>
+              <h3>Voice task entry</h3>
+              <p>Tap the mic and say "ping the API every 60 seconds" — the browser's Web Speech API fills the form for you.</p>
+            </article>
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 4-6 5 4" /><path d="M3 21h18" /></svg>
+              </span>
+              <h3>Live health metrics</h3>
+              <p>Task counts, runs in the last 24 hours and overall success rate update every time the dashboard polls.</p>
+            </article>
+            <article class="feature">
+              <span class="feature__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M8 12h3l2-3 2 6 2-3h1" /></svg>
+              </span>
+              <h3>Pause, resume, run now</h3>
+              <p>Stop a task without deleting its config, resume it later, or trigger one execution on demand for a demo.</p>
+            </article>
+          </div>
+        </div>
+
+        <!-- How it works -->
+        <div class="wrap section">
+          <div class="section__head">
+            <h2>Three steps from idea to first run</h2>
+            <p>The whole flow fits in a live demo under two minutes.</p>
+          </div>
+          <ol class="steps">
+            <li class="step">
+              <span class="step__num">01</span>
+              <h3>Describe the task</h3>
+              <p>Name it (type or speak), pick an interval, choose Log Message or HTTP Ping, and paste the payload.</p>
+            </li>
+            <li class="step">
+              <span class="step__num">02</span>
+              <h3>Scheduler takes over</h3>
+              <p>The backend loop wakes up, claims due tasks, executes the action and writes the result to the store.</p>
+            </li>
+            <li class="step">
+              <span class="step__num">03</span>
+              <h3>Watch it run</h3>
+              <p>The dashboard polls every 5 seconds, so counts, next-run timers and history stay current on screen.</p>
+            </li>
+          </ol>
+        </div>
+
+        <div class="wrap">
+          <div class="cta-band">
+            <div>
+              <h2>Ready to schedule your first task?</h2>
+              <p>Connect to your workspace and start with a real, persistent task.</p>
+            </div>
+            <a class="btn btn--primary btn--lg" href="#/auth">Get started free</a>
+          </div>
+        </div>
+
+        <footer class="footer">
+          <div class="wrap footer__inner">
+            <span>Tickwise · Scheduled Task Manager MVP</span>
+            <span>HTML · CSS · Vanilla JS · FastAPI</span>
+          </div>
+        </footer>
+      </section>
+
+      <!-- ==================================================================
+           VIEW 2 — WORKSPACE ACCESS (shared API key; no mock accounts)
+           ================================================================== -->
+      <section class="view" id="view-auth" data-view="auth">
+        <div class="wrap auth-wrap">
+          <div class="auth-card">
+            <aside class="auth-aside">
+              <span class="brand brand--onDark">
+                <span class="brand__mark" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 1.8" />
+                  </svg>
+                </span>
+                <span class="brand__text">Tickwise<span class="brand__dot">.</span></span>
+              </span>
+              <h2>Your schedules, on autopilot.</h2>
+              <ul class="auth-list">
+                <li>Create tasks with a 5-second setup</li>
+                <li>See the next run count down in real time</li>
+                <li>Keep an audit trail of every attempt</li>
+              </ul>
+              <p class="auth-aside__note">
+                This workspace uses a shared API key when configured. It does not yet provide separate user accounts.
+              </p>
+            </aside>
+            <div class="auth-form-wrap">
+              <h2 class="auth-title">Connect to your workspace</h2>
+              <p class="auth-sub">Enter the deployment's API key, or leave it blank for a local workspace without a key.</p>
+              <form id="authForm" novalidate>
+                <div class="field">
+                  <label class="field__label" for="authKey">Workspace API key</label>
+                  <input class="input" id="authKey" name="apiKey" type="password" placeholder="Optional for local development" autocomplete="off" />
+                  <p class="field__error" data-error-for="authKey" hidden></p>
+                  <p class="field__hint">The key is kept only in this browser tab.</p>
+                </div>
+                <button class="btn btn--primary btn--block" type="submit" id="authSubmit">Open dashboard</button>
+              </form>
+              <p class="auth-foot"><a href="#/dashboard" class="link">Continue without a key →</a></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           VIEW 3 — DASHBOARD (core MVP)
+           ================================================================== -->
+      <section class="view" id="view-dashboard" data-view="dashboard">
+        <div class="wrap dash">
+          <div class="dash__head">
+            <div>
+              <p class="eyebrow" id="greetingName">Dashboard</p>
+              <h1 class="dash__title">Scheduled tasks</h1>
+            </div>
+            <div class="dash__head-right">
+              <span class="sync-chip" id="syncChip">
+                <span class="dot" aria-hidden="true"></span>
+                <span id="syncText">Polling every 5s</span>
+              </span>
+              <button class="btn btn--primary" type="button" data-action="focus-form">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                New task
+              </button>
+            </div>
+          </div>
+
+          <!-- KPI row -->
+          <div class="stats" id="stats">
+            <div class="stat">
+              <span class="stat__label">Total tasks</span>
+              <strong class="stat__value" id="statTotal">—</strong>
+              <span class="stat__hint" id="statTotalHint">scheduled</span>
+            </div>
+            <div class="stat">
+              <span class="stat__label">Active</span>
+              <strong class="stat__value" id="statActive">—</strong>
+              <span class="stat__hint" id="statActiveHint">running on interval</span>
+            </div>
+            <div class="stat">
+              <span class="stat__label">Runs · 24h</span>
+              <strong class="stat__value" id="statRuns">—</strong>
+              <span class="stat__hint" id="statRunsHint">executions recorded</span>
+            </div>
+            <div class="stat">
+              <span class="stat__label">Success rate</span>
+              <strong class="stat__value" id="statRate">—</strong>
+              <span class="stat__hint" id="statRateHint">of runs in 24h</span>
+            </div>
+          </div>
+
+          <div class="dash__grid">
+            <!-- ------------ Create task form ------------ -->
+            <form class="panel form-panel" id="taskForm" novalidate>
+              <div class="panel__head">
+                <h2>Create a task</h2>
+                <p>The first run is one interval after you schedule it.</p>
+              </div>
+
+              <div class="field">
+                <label class="field__label" for="taskName">
+                  Task name
+                  <span class="field__hint-inline" id="voiceSupportHint"></span>
+                </label>
+                <div class="input-with-mic">
+                  <input
+                    class="input"
+                    id="taskName"
+                    name="name"
+                    type="text"
+                    maxlength="80"
+                    placeholder="e.g. Ping payment gateway"
+                    autocomplete="off"
+                    required
+                  />
+                  <button
+                    class="mic-btn"
+                    id="micBtn"
+                    type="button"
+                    aria-label="Dictate the task name"
+                    aria-pressed="false"
+                    title="Speak the task name"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+                      <path d="M5 11a7 7 0 0 0 14 0" />
+                      <path d="M12 18v3" />
+                    </svg>
+                    <span class="mic-btn__ring" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <p class="field__hint" id="voiceHint" hidden></p>
+                <p class="field__error" data-error-for="name" hidden></p>
+              </div>
+
+              <div class="form-row">
+                <div class="field">
+                  <label class="field__label" for="taskInterval">Interval</label>
+                  <div class="input-group">
+                    <input
+                      class="input"
+                      id="taskInterval"
+                      name="interval"
+                      type="number"
+                      min="5"
+                      max="86400"
+                      step="1"
+                      value="30"
+                      required
+                    />
+                    <span class="input-group__suffix">seconds</span>
+                  </div>
+                  <p class="field__error" data-error-for="interval" hidden></p>
+                </div>
+
+                <div class="field">
+                  <label class="field__label" for="taskRetries">Max retries</label>
+                  <div class="input-group">
+                    <input class="input" id="taskRetries" name="maxRetries" type="number" min="0" max="5" step="1" value="2" />
+                    <span class="input-group__suffix">attempts</span>
+                  </div>
+                  <p class="field__error" data-error-for="maxRetries" hidden></p>
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="field__label" for="taskAction">Action type</label>
+                <div class="select-wrap">
+                  <select class="input select" id="taskAction" name="actionType">
+                    <option value="log">Log Message</option>
+                    <option value="http">HTTP Ping</option>
+                  </select>
+                  <svg class="select-wrap__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="field__label" for="taskPayload" id="payloadLabel">Message to log</label>
+                <textarea
+                  class="input textarea"
+                  id="taskPayload"
+                  name="payload"
+                  rows="3"
+                  maxlength="500"
+                  placeholder="e.g. Snapshot queued for pg_dump"
+                  required
+                ></textarea>
+                <p class="field__hint" id="payloadHint">Written to the run log every time the task fires.</p>
+                <p class="field__error" data-error-for="payload" hidden></p>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn btn--primary btn--block" type="submit" id="createBtn">Schedule task</button>
+                <button class="btn btn--ghost" type="reset" id="resetBtn">Reset</button>
+              </div>
+
+              <p class="panel__foot">
+                Stored via <code>POST /api/v1/tasks</code> · validated on both client and server.
+              </p>
+            </form>
+
+            <!-- ------------ Task list ------------ -->
+            <section class="panel list-panel" aria-labelledby="listTitle">
+              <div class="panel__head panel__head--row">
+                <div>
+                  <h2 id="listTitle">Scheduled tasks</h2>
+                  <p id="taskCountLabel">Loading…</p>
+                </div>
+                <div class="search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" /><path d="m16.5 16.5 4 4" />
+                  </svg>
+                  <input id="taskSearch" type="search" placeholder="Filter this page…" aria-label="Filter tasks on this page" />
+                </div>
+              </div>
+
+              <div class="task-list" id="taskList" aria-live="polite"></div>
+              <div class="pagination" id="taskPagination" hidden>
+                <button class="btn btn--sm btn--ghost" type="button" id="prevPage">Previous</button>
+                <span id="pageLabel" aria-live="polite"></span>
+                <button class="btn btn--sm btn--ghost" type="button" id="nextPage">Next</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ================= Execution history modal ================= -->
+  <div class="modal" id="historyModal" hidden>
+    <div class="modal__backdrop" data-action="close-history"></div>
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="historyTitle" tabindex="-1">
+      <header class="modal__head">
+        <div>
+          <p class="modal__eyebrow">Execution history</p>
+          <h2 id="historyTitle">Task</h2>
+          <p class="modal__sub" id="historySub"></p>
+        </div>
+        <button class="icon-btn" type="button" data-action="close-history" aria-label="Close history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="modal__summary" id="historySummary"></div>
+      <div class="modal__body" id="historyBody"></div>
+      <div class="pagination modal__pagination" id="historyPagination" hidden>
+        <button class="btn btn--sm btn--ghost" type="button" id="historyPrev">Previous</button>
+        <span id="historyPageLabel" aria-live="polite"></span>
+        <button class="btn btn--sm btn--ghost" type="button" id="historyNext">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Toasts ================= -->
+  <div class="toast-stack" id="toastStack" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
