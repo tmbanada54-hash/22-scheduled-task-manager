@@ -4,10 +4,6 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-  actions: read
-
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -25,22 +21,6 @@ jobs:
             backend/requirements-dev.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
-      - name: Diagnose previous intermittent failure
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${{ github.repository }}/actions/jobs/123527120332/logs" > "$RUNNER_TEMP/previous-job.log"
-          python - "$RUNNER_TEMP/previous-job.log" <<'PYDIAG'
-          import sys
-          from pathlib import Path
-          text = Path(sys.argv[1]).read_text(errors="replace")
-          start = text.find("FAILURES")
-          end = text.find("short test summary info", start)
-          excerpt = text[start:end if end > start else None] if start >= 0 else text[-12000:]
-          excerpt = excerpt[:40000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::warning title=Previous backend failure::" + excerpt)
-          PYDIAG
       - name: Run backend tests
         shell: bash
         run: |

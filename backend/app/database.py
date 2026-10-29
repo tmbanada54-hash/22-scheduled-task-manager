@@ -1,6 +1,7 @@
 """SQLite connection management and transactional schema upgrades."""
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -9,6 +10,23 @@ SCHEMA_VERSION = 2
 DATABASE_DIR = Path(__file__).resolve().parents[2] / "database"
 SCHEMA_PATH = DATABASE_DIR / "schema.sqlite.sql"
 V1_TO_V2_PATH = DATABASE_DIR / "migrations" / "002_sqlite_interval_log.sql"
+STARTUP_LOCK_TIMEOUT_SECONDS = 30
+
+
+def _retry_locked(operation):
+    """Retry SQLite startup locks, including PRAGMA locks that ignore busy_timeout."""
+    deadline = time.monotonic() + STARTUP_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            # Mask extended SQLite result codes to their primary code. Other
+            # errors (permissions, I/O, malformed schema) must fail immediately.
+            code = getattr(exc, "sqlite_errorcode", None)
+            remaining = deadline - time.monotonic()
+            if code is None or (code & 0xFF) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or remaining <= 0:
+                raise
+            time.sleep(min(0.05, remaining))
 
 
 def _execute_script(conn: sqlite3.Connection, script: str) -> None:
@@ -39,12 +57,14 @@ class Database:
         self.path = str(Path(self.path).expanduser())
         schema = SCHEMA_PATH.read_text(encoding="utf-8")
         with closing(self.connect()) as conn:
-            conn.execute("PRAGMA journal_mode = WAL")
+            mode = _retry_locked(lambda: conn.execute("PRAGMA journal_mode = WAL").fetchone()[0])
+            if mode.lower() != "wal":
+                raise RuntimeError("SQLite could not enable WAL mode; use a persistent local filesystem")
             # Lock before checking the version so concurrent processes do not
             # both try to migrate the same database.
             conn.execute("PRAGMA foreign_keys = OFF")
             try:
-                conn.execute("BEGIN IMMEDIATE")
+                _retry_locked(lambda: conn.execute("BEGIN IMMEDIATE"))
                 version = conn.execute("PRAGMA user_version").fetchone()[0]
                 if version > SCHEMA_VERSION:
                     raise RuntimeError("Database schema is newer than this application")

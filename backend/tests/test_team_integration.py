@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -8,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.database import DATABASE_DIR, Database
+from app.database import DATABASE_DIR, Database, _retry_locked
 from app.main import create_app
 from app.models import TaskCreate, TaskPatch
 from app.schedules import from_db
@@ -252,3 +253,74 @@ def test_dashboard_counts_failed_retried_runs_only_once(repo, now):
         "failed_24h": 1,
         "retried_24h": 1,
     }
+
+
+def test_initialization_retries_transient_wal_and_transaction_locks(tmp_path, monkeypatch):
+    original_connect = Database.connect
+    remaining = {"PRAGMA journal_mode = WAL": 2, "BEGIN IMMEDIATE": 1}
+    calls = dict.fromkeys(remaining, 0)
+
+    class BusyConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def execute(self, statement, *args):
+            if statement in remaining:
+                calls[statement] += 1
+                if remaining[statement]:
+                    remaining[statement] -= 1
+                    error = sqlite3.OperationalError("database is locked")
+                    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                    raise error
+            return self.connection.execute(statement, *args)
+
+    monkeypatch.setattr(Database, "connect", lambda self: BusyConnection(original_connect(self)))
+    monkeypatch.setattr("app.database.time.sleep", lambda _: None)
+    Database(str(tmp_path / "retry.sqlite3")).initialize()
+    assert calls == {"PRAGMA journal_mode = WAL": 3, "BEGIN IMMEDIATE": 2}
+
+
+def test_startup_retries_only_lock_errors(monkeypatch):
+    error = sqlite3.OperationalError("disk I/O error")
+    error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+
+    def fail():
+        raise error
+
+    monkeypatch.setattr("app.database.time.sleep", lambda _: pytest.fail("unexpected retry"))
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        _retry_locked(fail)
+
+
+def test_many_concurrent_database_initializers_do_not_race_wal(tmp_path):
+    for index in range(8):
+        path = tmp_path / f"race-{index}.sqlite3"
+        make_v1_database(path)
+        barrier = threading.Barrier(4)
+
+        def initialize(_worker, path=path, barrier=barrier):
+            barrier.wait(timeout=5)
+            Database(str(path)).initialize()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(initialize, range(4)))
+        with sqlite3.connect(path) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert db.execute("SELECT count(*) FROM tasks").fetchone()[0] == 1
+            assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_startup_lock_retry_is_bounded(monkeypatch):
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_LOCKED
+
+    def fail():
+        raise error
+
+    monkeypatch.setattr("app.database.STARTUP_LOCK_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("app.database.time.sleep", lambda _: pytest.fail("retry exceeded deadline"))
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        _retry_locked(fail)
