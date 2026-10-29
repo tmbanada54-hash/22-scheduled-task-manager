@@ -5,6 +5,59 @@ SQLite storage. Create recurring log or HTTP tasks, inspect runs and attempts,
 retry failures, and pause, resume, trigger, or delete tasks. The merged frontend,
 backend and database contributions now use the same API and runtime schema.
 
+## Deploy on Render — no Docker
+
+The frontend, API and scheduler run together as **one native Python web service**.
+You don't need Docker, a separate static site, or a separate database service.
+
+### Recommended: one Blueprint
+
+1. In Render, choose **New → Blueprint**, connect this repository, and select the
+   `develop` branch. Render reads [`render.yaml`](render.yaml) from the repo root.
+2. Review the resources and charges **before** creating them. The Blueprint uses
+   Render's paid `0.5c-512mb` web service and a paid 1 GB persistent disk. The
+   disk keeps the SQLite database across restarts and deploys, and the paid
+   service does not spin down when idle. See [Render pricing](https://render.com/pricing).
+3. When Render prompts for `API_KEY`, enter a long, random secret and keep it
+   private. Render stores it as a service environment variable; don't commit it.
+4. Deploy, open your service's `onrender.com` URL, choose **Get started**, and
+   enter the same API key. Render supplies HTTPS. Check `/health` for service health.
+
+The Blueprint uses one instance, stores the database at
+`/var/data/tasks.sqlite3`, and runs the scheduler in the web service. The
+`.python-version` file selects Python 3.11. No separate worker is needed.
+
+### Alternative: create the web service manually
+
+If you prefer not to use a Blueprint, choose **New → Web Service** and enter:
+
+| Render setting | Value |
+| --- | --- |
+| Branch | `develop` |
+| Language | Python 3 |
+| Root Directory | Leave blank (use the repository root) |
+| Build Command | `pip install -r backend/requirements.txt` |
+| Start Command | `cd backend && exec python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| Health Check Path | `/health` |
+| Environment variables | `API_KEY` = your secret; `DATABASE_PATH` = `/var/data/tasks.sqlite3` |
+| Disk | Paid persistent disk mounted at `/var/data`, at least 1 GB |
+| Instances | One |
+
+Choose a paid compute plan for the disk and continuous scheduling. Keep the
+Root Directory blank: the backend also needs the root-level dashboard files and
+`database/` schema. If your Render service already defines `PYTHON_VERSION`,
+remove that override or set it to a fully qualified Python 3.11 release; the
+environment variable overrides `.python-version`.
+
+**Free Render is for temporary demos only.** Free web services spin down after
+15 minutes without incoming traffic, which stops the scheduler, and their local
+SQLite data is lost on spin-down, restart or redeploy. Free services cannot attach
+a persistent disk. For a demo, use the manual settings above with the Free plan,
+no disk, and `DATABASE_PATH=/tmp/tickwise/tasks.sqlite3`; expect data loss. The
+PostgreSQL prototype in this repository is not a drop-in replacement. See
+[Render's free-tier limitations](https://render.com/docs/free) and
+[persistent-disk guide](https://render.com/docs/disks).
+
 ## Quick start
 
 Requirements: Python 3.11+ and a local filesystem writable by the app. From the
@@ -152,53 +205,28 @@ Set environment variables directly or use `backend/.env.example` with
 | `ALLOW_PRIVATE_TARGETS` | `false` | Allow non-public addresses; only for trusted environments |
 | `CORS_ORIGINS` | unset | Comma-separated allowed cross-origin browser origins; unnecessary for the bundled same-origin UI |
 
-## Deployment
+## Storage, backup and other deployments
 
-`compose.yaml` builds the application from the repository root, mounts a named
-volume at `/data`, requires an API key, and binds to `127.0.0.1:8000` by default
-for use behind a TLS reverse proxy:
+The app needs a persistent **local** filesystem for SQLite. Use one long-lived
+instance; a shared network filesystem or multiple hosts are not supported. Take
+an online SQLite backup before upgrading so committed WAL data is included.
 
-```bash
-# Enter a long random secret without saving it in shell history or Git.
-read -r -s -p 'Workspace API key: ' API_KEY; echo
-export API_KEY
-docker compose up -d --build
-docker compose logs -f tickwise
-```
-
-Use `PORT` or `BIND_ADDRESS` to change the host binding. Only expose the service
-through HTTPS and network access controls. If deploying without Compose:
+For a Render service with the Blueprint disk, open the service's Shell and run:
 
 ```bash
-docker build -f backend/Dockerfile -t tickwise .
-docker run -d --name tickwise --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 -v tickwise-data:/data \
-  -e API_KEY="$API_KEY" tickwise
+python -c "import os,sqlite3; src=sqlite3.connect(os.environ['DATABASE_PATH']); dst=sqlite3.connect('/var/data/backup.sqlite3'); src.backup(dst); dst.close(); src.close(); os.chmod('/var/data/backup.sqlite3', 0o600)"
 ```
 
-Use one long-lived instance and a persistent **local** volume. The image runs
-as UID 10001; a bind-mounted directory must be writable by that user. Do not
-use an ephemeral filesystem or a network filesystem shared between machines.
-SQLite is appropriate for a single host and modest workloads, not distributed
-multi-host scaling. If the platform supplies a `PORT`, override the command
-with `uvicorn app.main:app --host 0.0.0.0 --port "$PORT"`. The health check is
-`/health`. No hosted URL is included.
+Transfer the backup securely off the service using
+[Render's file-transfer instructions](https://render.com/docs/disks#transferring-files),
+test restoration, and remove the temporary copy when no longer needed. For an
+existing backend v1 SQLite database, startup automatically migrates to v2 while
+preserving valid data; back up first. The database team's earlier unversioned
+prototype is incompatible and is rejected rather than overwritten; it needs a
+separate data conversion.
 
-### Backup
-
-Before upgrading, take an online SQLite backup so committed WAL data is included.
-For the Compose volume, for example:
-
-```bash
-docker compose exec tickwise python -c "import os,sqlite3; src=sqlite3.connect('/data/tasks.sqlite3'); dst=sqlite3.connect('/data/backup.sqlite3'); src.backup(dst); dst.close(); src.close(); os.chmod('/data/backup.sqlite3', 0o600)"
-docker compose cp tickwise:/data/backup.sqlite3 ./backup.sqlite3
-```
-
-Store backups securely, test restoration, and delete the temporary copy from the
-volume when no longer needed. For an existing backend v1 SQLite database, startup
-automatically migrates to v2 while preserving data; back up first. The database
-team's earlier unversioned prototype is incompatible and is rejected rather than
-overwritten. It needs a separately designed data conversion.
+Docker and Compose files are retained as **optional** alternatives for other
+hosts. Render's native Python setup above does not build or use them.
 
 ## Security and limitations
 
@@ -236,11 +264,13 @@ npx playwright install --with-deps chromium
 PYTHON_BIN="$PWD/backend/.venv/bin/python" npm run test:ui
 ```
 
-The browser test starts its own temporary API, scheduler and loopback HTTP
-receiver; it uses a disposable database and enables private targets only for the
-test. It covers key access, real task persistence, log and HTTP success/failure,
-pause/resume, histories, pagination and deletion. GitHub Actions also builds and
-smoke-tests the container with a persistent volume.
+The backend suite also starts the exact Render command with a temporary disk,
+checks the dashboard and API key, runs a task, and verifies persistence after a
+restart. The browser test starts its own temporary API, scheduler and loopback
+HTTP receiver; it uses a disposable database and enables private targets only
+for the test. It covers key access, log and HTTP success/failure, pause/resume,
+histories, pagination and deletion. GitHub Actions also tests the optional
+container deployment.
 
 ## Integration handoff and files created
 
@@ -260,7 +290,7 @@ smoke-tests the container with a persistent volume.
 - `backend/tests/test_team_integration.py`, `frontend-tests/smoke.cjs`,
   `package.json` and `package-lock.json` provide the cross-team integration
   checks that were missing from the individual branches.
-- `.dockerignore` and `compose.yaml`, together with the updated Dockerfile and CI
-  workflow, bridge the deployment handoff across all three teams. The original
-  proposed ER diagram is preserved in `docs/design/`; `docs/ER_DIAGRAM.md` now
-  describes the actual SQLite model.
+- `render.yaml` and `.python-version` provide the simple, native Python Render
+  deployment path. The optional Docker/Compose files remain for other hosts.
+  The original proposed ER diagram is preserved in `docs/design/`;
+  `docs/ER_DIAGRAM.md` now describes the actual SQLite model.
