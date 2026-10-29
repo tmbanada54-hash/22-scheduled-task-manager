@@ -1,3 +1,6 @@
+-- ARCHIVED POSTGRESQL PROTOTYPE ONLY; not compatible with the running SQLite application.
+-- These sample tasks may trigger outbound requests if a compatible prototype worker is attached.
+
 -- ============================================================
 -- Scheduled Task Manager — Seed Data (PostgreSQL)
 -- 6 sample tasks covering all schedule types + edge cases

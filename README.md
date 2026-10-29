@@ -1,184 +1,266 @@
-# Scheduled Task Manager
+# Tickwise — Scheduled Task Manager
 
-A backend for scheduling HTTP tasks, showing when they will run next, recording every execution attempt, and retrying failures. It is built with **FastAPI, SQLite, and an embedded asynchronous scheduler**. The interactive API documentation is the MVP interface; a dashboard can be added separately.
+A single-host scheduler with a browser dashboard, a FastAPI service, and durable
+SQLite storage. Create recurring log or HTTP tasks, inspect runs and attempts,
+retry failures, and pause, resume, trigger, or delete tasks. The merged frontend,
+backend and database contributions now use the same API and runtime schema.
 
 ## Quick start
 
-Requirements: Python **3.11+** and pip.
+Requirements: Python 3.11+ and a local filesystem writable by the app. From the
+repository root:
 
 ```bash
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate             # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
 cp .env.example .env
-uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000
+.venv/bin/uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000
 ```
 
-Visit [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for the interactive OpenAPI interface or [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) for health. The SQLite database is created automatically at `backend/data/tasks.sqlite3`. Keep the process running for scheduled work to execute.
+Open <http://127.0.0.1:8000/> and choose **Get started**. For this local-only
+configuration, leave the workspace key blank; the dashboard starts empty. Create
+a **Log Message** task, then use **Run now** and **View history**. The app
+initializes `backend/data/tasks.sqlite3` automatically. See
+[`database/README.md`](database/README.md) for an optional paused demo task.
 
-> **Security:** the default configuration has no API key and is intended only for local development. Before exposing the API, set a strong `API_KEY`, serve it over HTTPS, restrict `ALLOWED_TARGET_HOSTS`, and enforce network egress restrictions. Task URLs, headers, and bodies are stored in plaintext and returned by the task API. See [Security and limitations](#security-and-limitations).
+`backend/.env` is loaded only when `--env-file .env` is specified. Before making
+the service reachable by others, set a long random `API_KEY`, use HTTPS and
+restrict network access. Enter the same key on the workspace access screen.
+This is a **shared API key**, not individual user accounts. The frontend keeps
+it in the current tab's session storage; it does not fabricate accounts, tasks,
+or execution results.
 
-## Local end-to-end demo
-
-This demo schedules a webhook that fails twice, then succeeds on the third attempt. It uses a deliberately local, unauthenticated sample receiver; do not deploy that receiver.
-
-1. In a separate terminal, run:
-
-   ```bash
-   cd backend
-   python examples/webhook_receiver.py
-   ```
-
-2. For this local demo **only**, set these values in `backend/.env` and restart the API:
-
-   ```dotenv
-   ALLOW_PRIVATE_TARGETS=true
-   ALLOWED_TARGET_HOSTS=127.0.0.1
-   ```
-
-   Keep `API_KEY` empty for the commands below, or add `-H "X-API-Key: $API_KEY"` to each request if you configured a key.
-
-3. From a terminal, create a one-time task due in 15 seconds:
-
-   ```bash
-   RUN_AT="$(python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat())')"
-   TASK_ID="$(curl -sS -X POST http://127.0.0.1:8000/api/v1/tasks \
-     -H 'Content-Type: application/json' \
-     -d "{\"name\":\"Demo webhook\",\"url\":\"http://127.0.0.1:9001/flaky\",\"schedule\":{\"type\":\"once\",\"run_at\":\"$RUN_AT\"},\"body\":{\"event\":\"demo\"},\"retry\":{\"max_retries\":2,\"delay_seconds\":2}}" \
-     | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-   echo "Task: $TASK_ID"
-   curl -sS "http://127.0.0.1:8000/api/v1/tasks/$TASK_ID" | python -m json.tool
-   ```
-
-4. Refresh the run history after the due time; the three attempts should have HTTP statuses `503`, `503`, then `200`:
-
-   ```bash
-   curl -sS "http://127.0.0.1:8000/api/v1/tasks/$TASK_ID/runs" | python -m json.tool
-   ```
-
-   `/ok` always returns 200; `/fail` always returns 503. Stop the receiver and restore `ALLOW_PRIVATE_TARGETS=false` after the demo.
+The dashboard creates interval tasks (5–86,400 seconds) and displays existing
+cron and one-time tasks. Its search filters the current task page; older tasks
+and run history have pagination. Cron/once creation, configuration editing,
+custom HTTP methods, headers and bodies are available via the API. Voice entry
+uses the browser's Web Speech API and depends on browser/microphone support.
 
 ## API
 
-All application endpoints are under `/api/v1`. When `API_KEY` is set, pass it in the `X-API-Key` header, or use **Authorize** in `/docs`. `/health`, `/docs`, and `/openapi.json` are public.
+Interactive documentation: <http://127.0.0.1:8000/docs>. API routes are under
+`/api/v1`. If configured, send `X-API-Key: <your key>` on every API request;
+`/`, `/health`, `/docs` and `/openapi.json` are public.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Database and scheduler process health |
-| `POST` | `/api/v1/tasks` | Create a task and calculate its next execution |
-| `GET` | `/api/v1/tasks` | List tasks; optional `enabled`, `limit`, `offset` |
-| `GET` / `PATCH` / `DELETE` | `/api/v1/tasks/{task_id}` | Inspect, edit, or delete a task |
-| `POST` | `/api/v1/tasks/{task_id}/pause` | Pause scheduling and pending retries |
-| `POST` | `/api/v1/tasks/{task_id}/resume` | Resume a paused task |
-| `POST` | `/api/v1/tasks/{task_id}/runs` | Queue a manual run; returns `202` and a `Location` header |
-| `GET` | `/api/v1/tasks/{task_id}/runs` | Task run history, including attempts |
-| `GET` | `/api/v1/runs` | All run history; optional `task_id`, `status`, `limit`, `offset` |
-| `GET` | `/api/v1/runs/{run_id}` | Inspect a run and its attempts |
+| `GET` | `/health` | Database and scheduler health |
+| `GET` | `/api/v1/stats` | Global task counts and completed-run statistics for the last 24h |
+| `POST`, `GET` | `/api/v1/tasks` | Create or list tasks |
+| `GET`, `PATCH`, `DELETE` | `/api/v1/tasks/{id}` | Inspect, update or delete a task and its history |
+| `POST` | `/api/v1/tasks/{id}/pause`, `/resume` | Pause or resume |
+| `POST` | `/api/v1/tasks/{id}/runs` | Queue a manual run; returns `202` and a `Location` header |
+| `GET` | `/api/v1/tasks/{id}/runs` | A task's runs and their attempts |
+| `GET` | `/api/v1/runs`, `/api/v1/runs/{id}` | Query all runs or inspect one run |
 
-Lists return arrays, newest first; `limit` defaults to 50 and is capped at 100. Invalid input returns `422`, unknown resources `404`, and manual triggers of paused tasks or tasks with unfinished runs return `409`.
+Lists are newest first; `limit` defaults to 50 and is capped at 100, and
+`offset` is supported. Task lists accept `enabled`; run lists accept `status`
+and the global list accepts `task_id`. Validation errors return `422`, missing
+resources `404`, and manual triggers of paused tasks or those with an unfinished
+run return `409`. Statistics count **terminal runs created in the last 24h**;
+an enabled one-time task is no longer active once its run finishes.
 
-Example recurring task (`example.com` is a placeholder; use an endpoint you control):
+Example log task:
+
+```json
+{
+  "name": "Heartbeat",
+  "action_type": "log",
+  "message": "Service is running",
+  "schedule": {"type": "interval", "seconds": 30},
+  "retry": {"max_retries": 2, "delay_seconds": 60}
+}
+```
+
+Example HTTP task (`api.example.com` is a placeholder; use an endpoint you
+control):
 
 ```json
 {
   "name": "Sync inventory",
-  "description": "Ask the inventory service to refresh",
+  "action_type": "http",
   "url": "https://api.example.com/hooks/sync",
   "method": "POST",
   "headers": {"Authorization": "Bearer replace-me"},
   "body": {"source": "scheduler"},
   "schedule": {"type": "cron", "expression": "*/5 * * * *"},
   "retry": {"max_retries": 2, "delay_seconds": 60},
-  "timeout_seconds": 10,
-  "enabled": true
+  "timeout_seconds": 10
 }
 ```
 
-`name`, `url`, and `schedule` are required. Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`; JSON bodies are supported for `POST`, `PUT`, and `PATCH`. A body of `null` means no body. `retry.max_retries` defaults to 2 and ranges from 0–10; `retry.delay_seconds` defaults to 60 and ranges from 1–86,400. `timeout_seconds` defaults to 10 and ranges from 1–120. `PATCH` is partial at the top level, but nested `schedule` and `retry` objects are replaced rather than merged; omitted retry fields use their defaults. Setting `description` or `body` to `null` clears it.
+HTTP is the default action when `action_type` is omitted. Supported methods are
+`GET`, `POST`, `PUT`, `PATCH` and `DELETE`; JSON bodies are supported for POST,
+PUT and PATCH. A log action requires a nonempty `message` and cannot include an
+HTTP URL, headers or body. `max_retries` is **in addition to** the first attempt
+(0–10); delay is 1–86,400 seconds and timeout is 1–120 seconds. The dashboard
+uses a 60-second retry delay and a GET for HTTP pings. `PATCH` is partial at the
+top level, but replaces nested `schedule` and `retry` objects.
 
-Schedules are either:
+Schedules are:
 
 ```json
-{"type": "cron", "expression": "0 9 * * 1-5"}
+{"type":"interval","seconds":30}
+{"type":"cron","expression":"0 9 * * 1-5"}
+{"type":"once","run_at":"2030-01-01T09:00:00Z"}
 ```
 
-or:
+Cron uses five fields in **UTC**, with minute precision and traditional
+OR semantics for restricted day-of-month/day-of-week fields. One-time values
+must be future ISO 8601 timestamps with a timezone offset. Clients must handle
+local time and daylight-saving conversions.
 
-```json
-{"type": "once", "run_at": "2030-01-01T09:00:00Z"}
-```
+## Scheduling and delivery behavior
 
-Cron uses five fields (minute, hour, day of month, month, day of week), in **UTC**, with minute-level precision. As with traditional cron, when both day-of-month and day-of-week are restricted, either may match. One-time timestamps must include a timezone offset and must be in the future when created or changed; they are normalized to UTC. Convert local time and daylight-saving rules in the client.
-
-## Scheduling and retry behavior
-
-- Each scheduled occurrence or manual trigger creates a **run**. Each HTTP request is a numbered **attempt**. Run states are `queued`, `running`, `retrying`, `succeeded`, and `failed`.
-- A `2xx` response succeeds; any other HTTP status, network error, or timeout fails an attempt. Redirects are not followed. Responses are considered complete when their status/headers arrive; response bodies are not stored. Retries use a fixed delay and the run's saved configuration. `max_retries` is **in addition to** the first attempt.
-- Manual runs are independent of the schedule: triggering one does not move or consume the next scheduled execution.
-- Only one unfinished run per task is allowed, including time spent waiting for a retry. Manual triggering while a run is unfinished returns `409`. Recurring ticks that occur during an unfinished run are skipped. A due one-time schedule instead waits until the active run finishes.
-- After downtime, missed recurring ticks are coalesced into one run, not replayed individually. A missed one-time task runs when the scheduler is available. Polling may add up to the configured poll interval and queueing delay.
-- Pausing prevents new scheduled runs and holds queued runs/retries, but does not cancel a request already in flight. Resuming a recurring task schedules its next future tick. An unconsumed one-time task whose time passed while paused runs when resumed; a one-time schedule already dispatched is not rearmed. Change its schedule to run it again.
-- Editing a task affects future runs, not the URL, payload, headers, timeout, or retry policy already snapshotted for an unfinished run. Deleting a task also deletes its run/attempt history; it cannot stop an HTTP request already in flight.
-- SQLite transactions and worker leases prevent simultaneous claims against the **same local database**. A crashed worker's attempt becomes a failure after its timeout plus lease grace period; it will be retried if retries remain. Delivery is **not exactly once**: an endpoint may receive a request before a worker crashes, then receive a retry. Handle duplicate requests using the stable `Idempotency-Key` and `X-Scheduled-Run-Id` headers (both contain the run ID). `X-Scheduled-Task-Id` and `X-Scheduled-Attempt` are also sent; these headers cannot be overridden.
+- Each invocation creates a run; each delivery is a numbered attempt. States are
+  `queued`, `running`, `retrying`, `succeeded` and `failed`.
+- HTTP `2xx` succeeds; other statuses, timeouts and network failures may retry
+  after a fixed delay. Redirects are not followed; HTTP response bodies are not
+  saved. Log output is recorded in the attempt history.
+- Only one unfinished run per task is allowed. Manual runs do not move the
+  schedule. Recurring ticks missed during downtime or an unfinished run are
+  coalesced or skipped rather than replayed. A due one-time task waits for an
+  existing run. Polling and queueing can add delay.
+- Pausing stops future scheduling and holds queued runs/retries, but does not
+  cancel a request already in flight. Resuming a recurring task starts a new
+  interval or future cron tick. An unconsumed one-time task runs when resumed;
+  a dispatched one-time task is not automatically rearmed.
+- Settings are snapshotted per run: edits affect future runs, not unfinished
+  ones. Deleting a task removes its history and cannot cancel an in-flight HTTP
+  request.
+- SQLite transactions and leases coordinate workers using the same local file.
+  Recovery may retry after a worker crashes. **Delivery is not exactly once.**
+  Receivers should deduplicate using the stable `Idempotency-Key` or
+  `X-Scheduled-Run-Id` header; `X-Scheduled-Task-Id` and
+  `X-Scheduled-Attempt` are also supplied.
 
 ## Configuration
 
-Copy `backend/.env.example` to `backend/.env` and use `uvicorn --env-file .env`, or set the environment variables directly. The `.env` file is not loaded automatically without that flag.
+Set environment variables directly or use `backend/.env.example` with
+`uvicorn --env-file .env` from `backend/`.
 
-| Variable | Default | Description |
+| Variable | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE_PATH` | `data/tasks.sqlite3` | SQLite file path, relative to the working directory |
-| `SCHEDULER_ENABLED` | `true` | Run the embedded scheduler. If false, runs remain queued unless another scheduler uses the same database. |
-| `POLL_INTERVAL_SECONDS` | `1` | Scheduler polling interval, 0.05–60 seconds |
-| `MAX_CONCURRENCY` | `5` | Maximum simultaneous deliveries per scheduler process, 1–100 |
-| `LEASE_GRACE_SECONDS` | `30` | Extra seconds beyond the request timeout before a worker lease expires, 1–3,600 |
-| `API_KEY` | unset | If set, all `/api/v1` requests require this value in `X-API-Key` |
-| `ALLOWED_TARGET_HOSTS` | unset | Comma-separated **exact** hostnames/IPs without schemes or ports; unset allows any public hostname |
-| `ALLOW_PRIVATE_TARGETS` | `false` | Permit local, private, and other non-public IPs; only use in trusted environments |
-| `CORS_ORIGINS` | unset | Comma-separated browser frontend origins; no cross-origin access by default |
+| `SCHEDULER_ENABLED` | `true` | Run the embedded scheduler; disabling it leaves runs queued unless another worker uses the same database |
+| `POLL_INTERVAL_SECONDS` | `1` | Worker polling interval, 0.05–60 seconds |
+| `MAX_CONCURRENCY` | `5` | Maximum simultaneous deliveries per process, 1–100 |
+| `LEASE_GRACE_SECONDS` | `30` | Extra lease time beyond timeout, 1–3,600 seconds |
+| `API_KEY` | unset | Shared key required in `X-API-Key` for `/api/v1` when set |
+| `ALLOWED_TARGET_HOSTS` | unset | Comma-separated exact hostnames or IPs; unset permits any public target |
+| `ALLOW_PRIVATE_TARGETS` | `false` | Allow non-public addresses; only for trusted environments |
+| `CORS_ORIGINS` | unset | Comma-separated allowed cross-origin browser origins; unnecessary for the bundled same-origin UI |
 
-## Data model and architecture
+## Deployment
 
-The API validates task input and stores it in SQLite. The scheduler polls for due schedules, atomically creates runs, claims them with a lease, performs HTTP requests, and persists each outcome. A partial unique index enforces one active run per task; foreign keys cascade task deletion to history. Times are stored as fixed-width UTC timestamps.
+`compose.yaml` builds the application from the repository root, mounts a named
+volume at `/data`, requires an API key, and binds to `127.0.0.1:8000` by default
+for use behind a TLS reverse proxy:
 
-- `tasks`: task definition, schedule, retry policy, enabled state, and next scheduled execution.
-- `runs`: trigger, scheduled time, state, next attempt, lease, terminal result, and immutable delivery snapshot.
-- `attempts`: attempt number, start/finish times, HTTP status, and sanitized error.
+```bash
+# Enter a long random secret without saving it in shell history or Git.
+read -r -s -p 'Workspace API key: ' API_KEY; echo
+export API_KEY
+docker compose up -d --build
+docker compose logs -f tickwise
+```
 
-SQLite is suitable for a single host and modest workloads. Use a persistent **local** disk, not an ephemeral container filesystem or a network filesystem shared between machines. Multiple local processes can coordinate through the same database, but `MAX_CONCURRENCY` is per process. For multi-host scaling, a database-backed queue and distributed worker design should replace SQLite. Back up a live database with SQLite's online backup API so its WAL is included.
+Use `PORT` or `BIND_ADDRESS` to change the host binding. Only expose the service
+through HTTPS and network access controls. If deploying without Compose:
+
+```bash
+docker build -f backend/Dockerfile -t tickwise .
+docker run -d --name tickwise --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 -v tickwise-data:/data \
+  -e API_KEY="$API_KEY" tickwise
+```
+
+Use one long-lived instance and a persistent **local** volume. The image runs
+as UID 10001; a bind-mounted directory must be writable by that user. Do not
+use an ephemeral filesystem or a network filesystem shared between machines.
+SQLite is appropriate for a single host and modest workloads, not distributed
+multi-host scaling. If the platform supplies a `PORT`, override the command
+with `uvicorn app.main:app --host 0.0.0.0 --port "$PORT"`. The health check is
+`/health`. No hosted URL is included.
+
+### Backup
+
+Before upgrading, take an online SQLite backup so committed WAL data is included.
+For the Compose volume, for example:
+
+```bash
+docker compose exec tickwise python -c "import os,sqlite3; src=sqlite3.connect('/data/tasks.sqlite3'); dst=sqlite3.connect('/data/backup.sqlite3'); src.backup(dst); dst.close(); src.close(); os.chmod('/data/backup.sqlite3', 0o600)"
+docker compose cp tickwise:/data/backup.sqlite3 ./backup.sqlite3
+```
+
+Store backups securely, test restoration, and delete the temporary copy from the
+volume when no longer needed. For an existing backend v1 SQLite database, startup
+automatically migrates to v2 while preserving data; back up first. The database
+team's earlier unversioned prototype is incompatible and is rejected rather than
+overwritten. It needs a separately designed data conversion.
 
 ## Security and limitations
 
-- With no `API_KEY`, all application endpoints are unauthenticated. Use a long, random key, HTTPS, restrictive CORS, and network access controls for any shared deployment. This is a single shared key, not per-user authorization or auditing.
-- By default, literal private/local IPs are rejected. DNS results are checked at delivery time, and the checked addresses are used for the actual connection; any non-public DNS answer is rejected. Redirects and environment proxies are disabled, and TLS certificates are verified. An exact target-host allowlist and infrastructure-level egress rules are still recommended; this is not a substitute for network isolation.
-- `ALLOW_PRIVATE_TARGETS=true` permits access to internal services, including cloud metadata endpoints. Only enable it when task authors and target hosts are trusted, and keep the host allowlist narrow.
-- Target headers, URLs, and bodies, including any credentials, are stored unencrypted in the database and returned to API clients. Protect the database and backups; do not put secrets in query strings. Request bodies are limited to 128 KiB; task JSON bodies to 64 KiB.
-- SQLite and the embedded poller are intentionally simple. There is no UI, user management, result-body capture, job-history retention policy, or distributed multi-host scheduler yet.
+- With no `API_KEY`, application API endpoints are unauthenticated. Use a
+  random key, HTTPS, a restrictive firewall/reverse proxy and egress controls.
+  There is no per-user authorization, account management, key rotation UI or
+  request rate limiting.
+- Private/local IPs are blocked by default. DNS answers are checked at delivery
+  time, redirects and environment proxies are disabled, and TLS certificates
+  are verified. Restrict `ALLOWED_TARGET_HOSTS` and infrastructure egress.
+  `ALLOW_PRIVATE_TARGETS=true` can expose internal services and cloud metadata;
+  use it only when task authors and target hosts are trusted.
+- URLs, HTTP headers and bodies, log messages, and history are stored unencrypted
+  and returned to authorized API clients. Protect the database and backups and
+  avoid secrets in URLs. There is no automatic history-retention policy.
+- The original frontend-team images in `screenshots/` depict the earlier
+  prototype, including its simulated sign-in; the running UI uses API keys.
+- The database team's PostgreSQL/Prisma work is preserved as a design prototype,
+  not a supported runtime or automatic migration source. See
+  [`database/README.md`](database/README.md) and the
+  [runtime ER diagram](docs/ER_DIAGRAM.md).
 
-## Running tests
+## Testing
 
 ```bash
 cd backend
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-python -m pytest -q
-ruff check .
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check .
+.venv/bin/python -m pytest -q
+cd ..
+
+# Optional browser integration test (Node 22+, browser dependencies required)
+npm ci
+npx playwright install --with-deps chromium
+PYTHON_BIN="$PWD/backend/.venv/bin/python" npm run test:ui
 ```
 
-The suite covers API validation/authentication, schedule and pause/resume behavior, retries and exhaustion, real HTTP delivery, timeouts, redirect and network restrictions, restart persistence, leases, and competing workers.
+The browser test starts its own temporary API, scheduler and loopback HTTP
+receiver; it uses a disposable database and enables private targets only for the
+test. It covers key access, real task persistence, log and HTTP success/failure,
+pause/resume, histories, pagination and deletion. GitHub Actions also builds and
+smoke-tests the container with a persistent volume.
 
-## Deployment example
+## Integration handoff and files created
 
-A Dockerfile is included; build from the `backend` directory:
-
-```bash
-cd backend
-docker build -t scheduled-task-manager .
-docker run --rm -p 8000:8000 -v scheduled-task-data:/data \
-  -e API_KEY='replace-with-a-long-random-secret' \
-  -e ALLOWED_TARGET_HOSTS='api.example.com' \
-  scheduled-task-manager
-```
-
-In a hosting service, run a long-lived instance and mount a persistent volume at `/data` (or set `DATABASE_PATH` to another persistent local path). If the platform supplies a `PORT`, override the container command with `uvicorn app.main:app --host 0.0.0.0 --port "$PORT"`. The health endpoint is `/health`. This repository does not include a deployed URL.
+- `app.js` now supplies the frontend↔backend integration that was missing from
+  the frontend handoff: real same-origin API calls, a shared-key flow and
+  persisted run history. The UI and API teams would normally agree on this
+  adapter and the final contract together.
+- `database/migrations/001_sqlite_backend_v1.sql` extracts the backend team's
+  previous embedded schema; `002_sqlite_interval_log.sql` bridges it to the
+  database/frontend teams' interval and log needs. The team SQLite prototype was
+  preserved under `database/design/` rather than silently discarded.
+- `database/seed.sqlite.sql` and `database/tests/test_constraints.sql` were
+  referenced or needed by the database handoff but missing. They now target the
+  supported SQLite runtime; the database team would normally supply/maintain
+  these files. The original PostgreSQL constraint test was never supplied and
+  remains a separate, unsupported prototype task.
+- `backend/tests/test_team_integration.py`, `frontend-tests/smoke.cjs`,
+  `package.json` and `package-lock.json` provide the cross-team integration
+  checks that were missing from the individual branches.
+- `.dockerignore` and `compose.yaml`, together with the updated Dockerfile and CI
+  workflow, bridge the deployment handoff across all three teams. The original
+  proposed ER diagram is preserved in `docs/design/`; `docs/ER_DIAGRAM.md` now
+  describes the actual SQLite model.

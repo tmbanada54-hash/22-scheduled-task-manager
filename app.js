@@ -1,64 +1,17 @@
-/* ==========================================================================
-   Tickwise — Scheduled Task Manager
-   app.js · vanilla JS single-page app
-   --------------------------------------------------------------------------
-   HOW THIS FILE IS ORGANISED
-     1.  Config & tiny helpers
-     2.  Mock backend  (swap for FastAPI — every call site is marked TODO/API)
-     3.  Router (hash based: #/ , #/auth , #/dashboard)
-     4.  Theme
-     5.  Auth (visual only)
-     6.  Dashboard: stats + task list rendering
-     7.  Create-task form + validation
-     8.  Voice input (Web Speech API)
-     9.  History modal
-     10. Live loop: 1s countdown, 5s polling
-     11. Boot
-
-   DATA MODEL (mirrors the FastAPI / SQLAlchemy schema in the README)
-   --------------------------------------------------------------------------
-   Task {
-     id              string   "tsk_ab12cd"
-     name            string   1..80 chars
-     interval_seconds int      5..86400
-     action_type     "log" | "http"
-     payload         string   message text, or an http(s) URL
-     status          "active" | "paused"
-     max_retries     int      0..5
-     next_run_at     ISO-8601 UTC  (null when paused)
-     created_at      ISO-8601 UTC
-     last_run_at     ISO-8601 UTC | null
-     last_status     "success" | "failed" | null
-   }
-   Run (execution history row)
-   {
-     id            string
-     task_id       string
-     started_at    ISO-8601
-     duration_ms   int
-     status        "success" | "failed"
-     attempt       int   1-based; >1 means a retry
-     detail        string  worker output / error message
-   }
-   ========================================================================== */
+/* Tickwise frontend: same-origin FastAPI client, dashboard, and voice entry. */
 
 (function () {
   "use strict";
 
   /* ======================================================= 1. Config & helpers */
 
-  /**
-   * USE_MOCK_BACKEND
-   * true  -> the UI runs entirely on the seeded in-memory/localStorage store.
-   * false -> every api.* call hits the FastAPI server at API_BASE.
-   * Flip this to false once uvicorn is running and the endpoints exist.
-   */
-  const USE_MOCK_BACKEND = true;
-  const API_BASE = "http://localhost:8000"; // FastAPI default (uvicorn --port 8000)
-  const POLL_INTERVAL_MS = 5000;            // dashboard refresh cadence
-  const TICK_MS = 1000;                     // countdown re-render cadence
-  const STORAGE_KEY = "tickwise.state.v1";
-  const USER_KEY = "tickwise.user.v1";
+  // Resolve against the page origin so the same build works behind the preview proxy.
+  const API_BASE = new URL("api/v1", document.baseURI).pathname.replace(/\/$/, "");
+  const POLL_INTERVAL_MS = 5000;
+  const TICK_MS = 1000;
+  const PAGE_SIZE = 100;
+  const HISTORY_PAGE_SIZE = 50;
+  const API_KEY_STORAGE = "tickwise.api-key.v1";
   const THEME_KEY = "tickwise.theme.v1";
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -99,14 +52,12 @@
   // Declared up front (not later in the file) so no code path can hit a
   // temporal-dead-zone error if boot order ever changes.
   let currentView = null;
-  let store = { tasks: [], runs: [] };
+  let store = { tasks: [], stats: null };
+  let pageOffset = 0;
   let pollTimer = null;
   let tickTimer = null;
   let lastSyncAt = 0;
   let polling = false;
-
-  const uid = (prefix = "tsk") =>
-    `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 
   const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
@@ -118,8 +69,6 @@
       '"': "&quot;",
       "'": "&#39;",
     }[ch]));
-
-  const iso = (ms) => new Date(ms).toISOString();
 
   /** "14:32:07" */
   const fmtClock = (ms) =>
@@ -170,7 +119,7 @@
   function isSafeUrl(value) {
     try {
       const url = new URL(value);
-      return url.protocol === "http:" || url.protocol === "https:";
+      return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.hash;
     } catch {
       return false;
     }
@@ -197,373 +146,142 @@
     }, 3600);
   }
 
-  /* =============================================== 2. Mock backend ("server") */
+  /* =========================================== 2. Real FastAPI client */
 
-  /**
-   * A deliberately small stand-in for the FastAPI service. It keeps tasks in
-   * localStorage, and — importantly — *runs the scheduler* on every read so the
-   * demo behaves like a live worker: due tasks execute, produce history rows,
-   * fail deterministically where seeded to fail, and retry.
-   */
+  let sessionKey = "";
 
-  /** Deterministic failure rule so demos are reproducible:
-   *  an HTTP task whose payload includes "fail" always fails (and retries). */
-  const shouldFail = (task) =>
-    task.action_type === "http" && /fail/i.test(task.payload);
-
-  /**
-   * Generates realistic history rows. When a run fails and the task allows
-   * retries, one row is produced per attempt — exactly what the worker does.
-   */
-  function seedRuns(task, count, { failEvery = 0 } = {}) {
-    const runs = [];
-    const now = Date.now();
-    const maxAttempts = 1 + Number(task.max_retries || 0);
-
-    for (let i = count; i >= 1; i -= 1) {
-      const started = now - i * task.interval_seconds * 1000;
-      const failed = failEvery > 0 && i % failEvery === 0;
-      const attempts = failed ? maxAttempts : 1;
-
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        runs.push({
-          id: uid("run"),
-          task_id: task.id,
-          started_at: iso(started + (attempt - 1) * 2000),
-          duration_ms: failed ? 1400 + attempt * 60 : 40 + Math.round(Math.random() * 220),
-          status: failed ? "failed" : "success",
-          attempt,
-          detail: failed
-            ? `attempt ${attempt}/${maxAttempts} · HTTPError: 503 Service Unavailable`
-            : task.action_type === "http"
-              ? `200 OK · ${task.payload}`
-              : `logged: ${task.payload}`,
-        });
-      }
-    }
-    return runs;
+  function readApiKey() {
+    try { return window.sessionStorage.getItem(API_KEY_STORAGE) || ""; }
+    catch { return sessionKey; }
   }
 
-  function buildSeed() {
-    const now = Date.now();
-
-    const t1 = {
-      id: "tsk_ping01",
-      name: "Ping payment gateway",
-      interval_seconds: 30,
-      action_type: "http",
-      payload: "https://api.stripe.com/health",
-      status: "active",
-      max_retries: 2,
-      created_at: iso(now - 1000 * 60 * 60 * 26),
-      next_run_at: iso(now + 8000),
-      last_run_at: null,
-      last_status: "success",
-    };
-
-    const t2 = {
-      id: "tsk_log02",
-      name: "Snapshot nightly metrics",
-      interval_seconds: 10,
-      action_type: "log",
-      payload: "nightly metrics snapshot queued",
-      status: "active",
-      max_retries: 1,
-      created_at: iso(now - 1000 * 60 * 60 * 4),
-      next_run_at: iso(now + 4000),
-      last_run_at: null,
-      last_status: "success",
-    };
-
-    const t3 = {
-      id: "tsk_fail03",
-      name: "Webhook to legacy billing",
-      interval_seconds: 45,
-      action_type: "http",
-      payload: "https://legacy-billing.internal/fail/hook",
-      status: "active",
-      max_retries: 2,
-      created_at: iso(now - 1000 * 60 * 90),
-      next_run_at: iso(now + 20000),
-      last_run_at: null,
-      last_status: "failed",
-    };
-
-    const t4 = {
-      id: "tsk_pause04",
-      name: "Daily Slack standup reminder",
-      interval_seconds: 86400,
-      action_type: "log",
-      payload: "Standup in 10 minutes — post your update",
-      status: "paused",
-      max_retries: 0,
-      created_at: iso(now - 1000 * 60 * 60 * 72),
-      next_run_at: null,
-      last_run_at: null,
-      last_status: "success",
-    };
-
-    const tasks = [t1, t2, t3, t4];
-    const runs = [
-      ...seedRuns(t1, 5),                          // healthy HTTP task
-      ...seedRuns(t2, 6),                          // healthy log task
-      ...seedRuns(t3, 4, { failEvery: 1 }),        // always fails -> full retry trail
-      ...seedRuns(t4, 2),                          // paused task history
-    ].sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
-
-    tasks.forEach((task) => {
-      const own = runs.filter((r) => r.task_id === task.id);
-      task.last_run_at = own.length ? own[0].started_at : null;
-      task.last_status = own.length ? own[0].status : null;
-    });
-
-    return { tasks, runs };
-  }
-
-  function loadState() {
+  function writeApiKey(value) {
+    sessionKey = value;
     try {
-      const raw = storage.get(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.tasks) && Array.isArray(parsed.runs)) {
-          return parsed;
-        }
-      }
-    } catch {
-      /* corrupted store -> fall through to a fresh seed */
-    }
-    const seeded = buildSeed();
-    saveState(seeded);
-    return seeded;
+      if (value) window.sessionStorage.setItem(API_KEY_STORAGE, value);
+      else window.sessionStorage.removeItem(API_KEY_STORAGE);
+    } catch { /* Storage may be blocked in a sandboxed browser. */ }
   }
 
-  function saveState(state) {
+  class ApiError extends Error {
+    constructor(status, message) {
+      super(message);
+      this.status = status;
+    }
+  }
+
+  async function apiFetch(path, { method = "GET", body, key = readApiKey() } = {}) {
+    const headers = {};
+    if (key) headers["X-API-Key"] = key;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    let response;
     try {
-      storage.set(STORAGE_KEY, JSON.stringify(state));
+      response = await fetch(`${API_BASE}${path}`, {
+        method, headers, cache: "no-store",
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
     } catch {
-      /* private mode / quota — the in-memory copy still works this session */
+      throw new ApiError(0, "Could not reach the server. Check your connection.");
     }
-  }
-
-  let DB = loadState();
-
-  const persist = () => saveState(DB);
-  const findTask = (id) => DB.tasks.find((t) => t.id === id);
-
-  /**
-   * The mock scheduler. Runs every task whose next_run_at is in the past,
-   * records the run(s) including retries, and rolls next_run_at forward.
-   * Called on every read so the client never diverges from "the server".
-   */
-  function runDueTasks() {
-    const now = Date.now();
-    let changed = false;
-
-    DB.tasks.forEach((task) => {
-      if (task.status !== "active" || !task.next_run_at) return;
-
-      let scheduled = new Date(task.next_run_at).getTime();
-      let guard = 0;
-
-      while (scheduled <= now && guard < 8) {
-        guard += 1;
-        const maxAttempts = 1 + Number(task.max_retries || 0);
-        let attempt = 1;
-        let succeeded = false;
-
-        while (attempt <= maxAttempts) {
-          const failed = shouldFail(task);
-          const startedAt = scheduled + (attempt - 1) * 2000;
-          DB.runs.push({
-            id: uid("run"),
-            task_id: task.id,
-            started_at: iso(startedAt),
-            duration_ms: failed ? 1500 : 40 + Math.round(Math.random() * 200),
-            status: failed ? "failed" : "success",
-            attempt,
-            detail: failed
-              ? `attempt ${attempt}/${maxAttempts} · HTTPError: 503 Service Unavailable`
-              : task.action_type === "http"
-                ? `200 OK · ${task.payload}`
-                : `logged: ${task.payload}`,
-          });
-          if (!failed) {
-            succeeded = true;
-            break;
-          }
-          attempt += 1;
+    if (!response.ok) {
+      let detail = "The server rejected the request.";
+      try {
+        const data = await response.json();
+        if (typeof data.detail === "string") detail = data.detail;
+        else if (Array.isArray(data.detail)) {
+          detail = data.detail.map((error) => (error.msg || "Invalid input").replace(/^Value error, /, "")).join("; ");
         }
-
-        task.last_run_at = iso(scheduled);
-        task.last_status = succeeded ? "success" : "failed";
-        scheduled += task.interval_seconds * 1000;
-        changed = true;
-      }
-
-      // Roll forward so a sleeping tab doesn't produce a backlog.
-      while (scheduled <= now) scheduled += task.interval_seconds * 1000;
-      task.next_run_at = iso(scheduled);
-    });
-
-    if (changed) {
-      // Keep the log bounded for the MVP store.
-      DB.runs = DB.runs
-        .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
-        .slice(0, 400);
-      persist();
+      } catch { /* Use the generic message for non-JSON errors. */ }
+      if (response.status === 401) detail = "A valid workspace API key is required.";
+      throw new ApiError(response.status, detail);
     }
+    return response.status === 204 ? null : response.json();
   }
 
-  /* ------------------------------------------------------------- API surface */
+  function mapTask(task) {
+    const schedule = task.schedule || {};
+    const scheduleLabel = schedule.type === "interval"
+      ? `Every ${fmtInterval(schedule.seconds)}`
+      : schedule.type === "cron"
+        ? `Cron ${schedule.expression} (UTC)`
+        : "One-time";
+    return {
+      id: task.id, name: task.name,
+      interval_seconds: schedule.type === "interval" ? schedule.seconds : null,
+      schedule_label: scheduleLabel,
+      action_type: task.action_type,
+      payload: task.action_type === "log" ? task.message : task.url,
+      status: task.enabled ? "active" : "paused",
+      completed: task.enabled && schedule.type === "once" && !task.next_run_at &&
+        !["queued", "running", "retrying"].includes(task.last_status),
+      in_progress: task.enabled && schedule.type === "once" && !task.next_run_at &&
+        ["queued", "running", "retrying"].includes(task.last_status),
+      max_retries: task.retry.max_retries,
+      next_run_at: task.next_run_at, created_at: task.created_at,
+      last_run_at: task.last_run_at, last_status: task.last_status,
+    };
+  }
 
-  /**
-   * Every function below is the single seam between UI and backend.
-   * To go live with FastAPI: set USE_MOCK_BACKEND = false (top of file) and
-   * delete the mock branch — the fetch calls are already written out.
-   */
+  function mapAttempts(runs) {
+    return runs.flatMap((run) => {
+      if (!run.attempts.length) {
+        return [{
+          id: run.id, task_id: run.task_id, started_at: run.created_at,
+          duration_ms: null, status: run.status, attempt: 0,
+          detail: run.status === "queued" ? "Waiting for a worker" : run.status,
+        }];
+      }
+      return run.attempts.map((attempt) => ({
+        id: `${run.id}:${attempt.number}`, task_id: run.task_id,
+        started_at: attempt.started_at,
+        duration_ms: attempt.finished_at
+          ? Math.max(0, new Date(attempt.finished_at) - new Date(attempt.started_at)) : null,
+        status: attempt.status === "succeeded" ? "success" : attempt.status,
+        attempt: attempt.number,
+        detail: attempt.output ?? attempt.error ?? (attempt.http_status ? `HTTP ${attempt.http_status}` : "In progress"),
+      }));
+    });
+  }
+
   const api = {
-    /** GET /tasks */
+    async verifyKey(key) {
+      await apiFetch("/tasks?limit=1", { key });
+    },
     async listTasks() {
-      if (USE_MOCK_BACKEND) {
-        await sleep(120);
-        runDueTasks();
-        return {
-          tasks: JSON.parse(JSON.stringify(DB.tasks)),
-          runs: JSON.parse(JSON.stringify(DB.runs)),
-        };
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks`, { headers: authHeader() });
-      // if (!res.ok) throw new ApiError(res.status, await res.text());
-      // return res.json();  // { tasks, runs }
+      const [tasks, stats] = await Promise.all([
+        apiFetch(`/tasks?limit=${PAGE_SIZE}&offset=${pageOffset}`), apiFetch("/stats"),
+      ]);
+      return { tasks: tasks.map(mapTask), stats };
     },
-
-    /** POST /tasks */
-    async createTask(payload) {
-      if (USE_MOCK_BACKEND) {
-        await sleep(320);
-        const now = Date.now();
-        const task = {
-          id: uid("tsk"),
-          name: payload.name,
-          interval_seconds: payload.interval_seconds,
-          action_type: payload.action_type,
-          payload: payload.payload,
-          status: "active",
-          max_retries: payload.max_retries,
-          created_at: iso(now),
-          // First run fires one interval from now.
-          next_run_at: iso(now + payload.interval_seconds * 1000),
-          last_run_at: null,
-          last_status: null,
-        };
-        DB.tasks.unshift(task);
-        persist();
-        return task;
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks`, {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json", ...authHeader() },
-      //   body: JSON.stringify(payload),
-      // });
-      // if (res.status === 422) throw new ApiError(422, await res.text());
-      // return res.json();
+    async createTask(values) {
+      const payload = {
+        name: values.name, action_type: values.action_type,
+        schedule: { type: "interval", seconds: values.interval_seconds },
+        retry: { max_retries: values.max_retries, delay_seconds: 60 },
+        ...(values.action_type === "http"
+          ? { url: values.payload, method: "GET" }
+          : { message: values.payload }),
+      };
+      return mapTask(await apiFetch("/tasks", { method: "POST", body: payload }));
     },
-
-    /** PATCH /tasks/{id}  — body: { status: "active" | "paused" } */
     async setTaskStatus(id, status) {
-      if (USE_MOCK_BACKEND) {
-        await sleep(140);
-        const task = findTask(id);
-        if (!task) throw new Error("Task not found");
-        task.status = status;
-        task.next_run_at =
-          status === "active" ? iso(Date.now() + task.interval_seconds * 1000) : null;
-        persist();
-        return task;
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks/${id}`, {
-      //   method: "PATCH",
-      //   headers: { "Content-Type": "application/json", ...authHeader() },
-      //   body: JSON.stringify({ status }),
-      // });
-      // if (!res.ok) throw new Error(await res.text());
-      // return res.json();
+      return apiFetch(`/tasks/${encodeURIComponent(id)}/${status === "active" ? "resume" : "pause"}`, { method: "POST" });
     },
-
-    /** POST /tasks/{id}/run  — trigger one execution immediately */
     async runNow(id) {
-      if (USE_MOCK_BACKEND) {
-        await sleep(420);
-        const task = findTask(id);
-        if (!task) throw new Error("Task not found");
-        const failed = shouldFail(task);
-        const run = {
-          id: uid("run"),
-          task_id: id,
-          started_at: iso(Date.now()),
-          duration_ms: failed ? 1200 : 60 + Math.round(Math.random() * 180),
-          status: failed ? "failed" : "success",
-          attempt: 1,
-          detail: failed
-            ? "manual run · HTTPError: 503 Service Unavailable"
-            : task.action_type === "http"
-              ? `200 OK · ${task.payload}`
-              : `logged: ${task.payload}`,
-        };
-        DB.runs.unshift(run);
-        task.last_run_at = run.started_at;
-        task.last_status = run.status;
-        persist();
-        return run;
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks/${id}/run`, {
-      //   method: "POST", headers: authHeader(),
-      // });
-      // if (!res.ok) throw new Error(await res.text());
-      // return res.json();
+      return apiFetch(`/tasks/${encodeURIComponent(id)}/runs`, { method: "POST" });
     },
-
-    /** DELETE /tasks/{id} */
     async deleteTask(id) {
-      if (USE_MOCK_BACKEND) {
-        await sleep(160);
-        DB.tasks = DB.tasks.filter((t) => t.id !== id);
-        DB.runs = DB.runs.filter((r) => r.task_id !== id);
-        persist();
-        return { ok: true };
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks/${id}`, {
-      //   method: "DELETE", headers: authHeader(),
-      // });
-      // if (!res.ok) throw new Error(await res.text());
-      // return res.json();
+      return apiFetch(`/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
     },
-
-    /** GET /tasks/{id}/runs — execution history, newest first */
-    async listRuns(id) {
-      if (USE_MOCK_BACKEND) {
-        await sleep(100);
-        runDueTasks();
-        return DB.runs.filter((r) => r.task_id === id);
-      }
-      // ---- REAL API -----------------------------------------------------
-      // const res = await fetch(`${API_BASE}/tasks/${id}/runs?limit=50`, {
-      //   headers: authHeader(),
-      // });
-      // if (!res.ok) throw new Error(await res.text());
-      // return res.json();
+    async listRuns(id, offset) {
+      const runs = await apiFetch(`/tasks/${encodeURIComponent(id)}/runs?limit=${HISTORY_PAGE_SIZE + 1}&offset=${offset}`);
+      return {
+        attempts: mapAttempts(runs.slice(0, HISTORY_PAGE_SIZE)),
+        runCount: Math.min(runs.length, HISTORY_PAGE_SIZE),
+        hasMore: runs.length > HISTORY_PAGE_SIZE,
+      };
     },
   };
-
-  // Placeholder for a real bearer token once auth exists.
-  // const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem("token")}` });
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /* ==================================================== 3. Router (hash based) */
 
@@ -624,83 +342,29 @@
     applyTheme(next);
   });
 
-  /* ========================================================= 5. Auth (mocked) */
+  /* ============================================== 5. Workspace access */
 
   const authForm = $("#authForm");
   const authSlot = $("#authSlot");
-  const authTitle = $("#authTitle");
-  const authSub = $("#authSub");
-  const nameField = $("#nameField");
+  const authKey = $("#authKey");
   const authSubmit = $("#authSubmit");
-  let authMode = "login";
-
-  const readUser = () => {
-    try {
-      return JSON.parse(storage.get(USER_KEY) || "null");
-    } catch {
-      return null;
-    }
-  };
-
-  const writeUser = (user) => {
-    try {
-      if (user) storage.set(USER_KEY, JSON.stringify(user));
-      else storage.remove(USER_KEY);
-    } catch { /* ignore */ }
-  };
 
   function renderAuthSlot() {
-    const user = readUser();
-    if (user) {
-      const initials = (user.name || user.email || "U")
-        .split(/[\s@.]+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0].toUpperCase())
-        .join("");
-      authSlot.innerHTML = `
-        <span class="user-chip" title="${escapeHtml(user.email)}">
-          <span class="user-chip__avatar" aria-hidden="true">${escapeHtml(initials)}</span>
-          <span class="user-chip__name">${escapeHtml(user.name || user.email.split("@")[0])}</span>
-        </span>
-        <button class="btn btn--ghost btn--sm" type="button" id="logoutBtn">Log out</button>`;
+    if (readApiKey()) {
+      authSlot.innerHTML = `<span class="user-chip"><span class="user-chip__name">Key set</span></span>
+        <button class="btn btn--ghost btn--sm" type="button" id="logoutBtn">Clear key</button>`;
       $("#logoutBtn").addEventListener("click", () => {
-        writeUser(null);
+        writeApiKey("");
+        authKey.value = "";
         renderAuthSlot();
-        toast("Logged out", "Session cleared (mock auth).", "info");
-        navigate("/");
+        toast("Key cleared", "The workspace key was removed from this tab.", "info");
+        navigate("/auth");
       });
     } else {
-      authSlot.innerHTML = `<a class="btn btn--ghost btn--sm" href="#/auth">Log in</a>`;
+      authSlot.innerHTML = `<a class="btn btn--ghost btn--sm" href="#/auth">Workspace access</a>`;
     }
-
-    const user2 = readUser();
-    $("#greetingName").textContent = user2
-      ? `Welcome back, ${(user2.name || user2.email.split("@")[0]).split(" ")[0]}`
-      : "Dashboard";
+    $("#greetingName").textContent = "Workspace";
   }
-
-  function setAuthMode(mode) {
-    authMode = mode;
-    $$("[data-auth-tab]").forEach((tab) => {
-      const active = tab.dataset.authTab === mode;
-      tab.classList.toggle("is-active", active);
-      tab.setAttribute("aria-selected", String(active));
-    });
-    const signup = mode === "signup";
-    nameField.hidden = !signup;
-    authTitle.textContent = signup ? "Create your account" : "Welcome back";
-    authSub.textContent = signup
-      ? "Start scheduling in under a minute."
-      : "Log in to manage your scheduled tasks.";
-    authSubmit.textContent = signup ? "Create account" : "Log in";
-    $("#authPassword").autocomplete = signup ? "new-password" : "current-password";
-    clearAuthErrors();
-  }
-
-  $$("[data-auth-tab]").forEach((tab) =>
-    tab.addEventListener("click", () => setAuthMode(tab.dataset.authTab))
-  );
 
   function setFieldError(inputId, message) {
     const input = $(`#${inputId}`);
@@ -712,50 +376,25 @@
     }
   }
 
-  function clearAuthErrors() {
-    ["authName", "authEmail", "authPassword"].forEach((id) => setFieldError(id, ""));
-  }
-
-  authForm.addEventListener("submit", (event) => {
+  authKey.value = readApiKey();
+  authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    clearAuthErrors();
-
-    const name = $("#authName").value.trim();
-    const email = $("#authEmail").value.trim();
-    const password = $("#authPassword").value;
-
-    let ok = true;
-    if (authMode === "signup" && name.length < 2) {
-      setFieldError("authName", "Enter your name (at least 2 characters).");
-      ok = false;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-      setFieldError("authEmail", "Enter a valid email address.");
-      ok = false;
-    }
-    if (password.length < 6) {
-      setFieldError("authPassword", "Password must be at least 6 characters.");
-      ok = false;
-    }
-    if (!ok) return;
-
-    // NOTE: MVP only — no request is sent. A real build posts to
-    // POST /auth/signup or /auth/login and stores the returned JWT.
+    setFieldError("authKey", "");
+    const key = authKey.value;
     authSubmit.disabled = true;
-    authSubmit.textContent = authMode === "signup" ? "Creating…" : "Logging in…";
-
-    setTimeout(() => {
-      writeUser({ name: authMode === "signup" ? name : email.split("@")[0], email });
+    authSubmit.textContent = "Connecting…";
+    try {
+      await api.verifyKey(key);
+      writeApiKey(key);
       renderAuthSlot();
-      authSubmit.disabled = false;
-      setAuthMode(authMode);
-      toast(
-        authMode === "signup" ? "Account created" : "Welcome back",
-        "Mock session started — real auth is on the roadmap.",
-        "success"
-      );
+      toast("Connected", "The workspace is ready.", "success");
       navigate("/dashboard");
-    }, 550);
+    } catch (error) {
+      setFieldError("authKey", error.message || "Could not connect.");
+    } finally {
+      authSubmit.disabled = false;
+      authSubmit.textContent = "Open dashboard";
+    }
   });
 
   /* =========================================== 6. Dashboard: state & rendering */
@@ -774,126 +413,96 @@
     statActiveHint: $("#statActiveHint"),
     statRunsHint: $("#statRunsHint"),
     statRateHint: $("#statRateHint"),
+    pagination: $("#taskPagination"),
+    prevPage: $("#prevPage"),
+    nextPage: $("#nextPage"),
+    pageLabel: $("#pageLabel"),
   };
 
   /** Last known server snapshot. */
   let searchTerm = "";
   let previousSignature = new Map(); // task id -> last_run_at, for the "just ran" flash
 
+  let refreshQueued = false;
   async function refreshTasks({ silent = false } = {}) {
-    if (polling) return; // never overlap requests
+    if (polling) { refreshQueued = true; return; }
     polling = true;
     try {
-      /* ---- REAL API: GET /tasks (see api.listTasks) ---- */
       const data = await api.listTasks();
-      store = {
-        tasks: Array.isArray(data.tasks) ? data.tasks : [],
-        runs: Array.isArray(data.runs) ? data.runs : [],
-      };
+      store = { tasks: data.tasks, stats: data.stats };
       lastSyncAt = Date.now();
       els.syncChip.classList.remove("is-offline");
-      els.syncChip.classList.toggle("is-mock", USE_MOCK_BACKEND);
       renderStats();
       renderTasks();
     } catch (error) {
       els.syncChip.classList.add("is-offline");
-      els.syncChip.classList.remove("is-mock");
-      els.syncText.textContent = "Offline — retrying";
-      if (!silent) {
+      els.syncText.textContent = error.status === 401 ? "API key required" : "Offline — retrying";
+      if (error.status === 401 && currentView === "dashboard") {
+        setFieldError("authKey", "Enter a valid workspace API key.");
+        navigate("/auth");
+      } else if (!silent) {
         toast("Could not load tasks", error.message || "Backend unreachable.", "error");
       }
     } finally {
       polling = false;
+      if (refreshQueued && currentView === "dashboard") {
+        refreshQueued = false;
+        queueMicrotask(() => refreshTasks({ silent: true }));
+      } else {
+        refreshQueued = false;
+      }
     }
   }
 
-  /* ------------------------------------------------------------- Stats row */
 
-  /**
-   * Stats are computed over "executions" — one entry per scheduled fire —
-   * rather than over raw attempt rows, so a task that succeeded on its 3rd
-   * retry counts as one successful execution (and its retries are still
-   * visible in the history modal).
-   */
-  function summariseRuns(runs) {
-    const byExecution = new Map();
-    runs.forEach((run) => {
-      // started_at is stable per scheduled fire; attempts are spaced 2s apart,
-      // so we bucket on a rounded 5s window.
-      const bucket = Math.floor(new Date(run.started_at).getTime() / 5000);
-      const key = `${run.task_id}|${bucket}`;
-      const current = byExecution.get(key);
-      if (!current) {
-        byExecution.set(key, { ok: run.status === "success", attempts: 1, retries: Number(run.attempt) > 1 ? 1 : 0 });
-      } else {
-        current.ok = current.ok || run.status === "success";
-        current.attempts += 1;
-      }
-    });
-    const list = [...byExecution.values()];
-    return {
-      executions: list.length,
-      succeeded: list.filter((e) => e.ok).length,
-      failed: list.filter((e) => !e.ok).length,
-      retried: list.filter((e) => e.attempts > 1).length,
-    };
-  }
+    /* ------------------------------------------------------------- Stats row */
 
   function renderStats() {
-    const total = store.tasks.length;
-    const active = store.tasks.filter((t) => t.status === "active").length;
-    const paused = total - active;
-    const since = Date.now() - 24 * 60 * 60 * 1000;
-    const recent = store.runs.filter((r) => new Date(r.started_at).getTime() >= since);
-    const stats = summariseRuns(recent);
-    const rate = stats.executions
-      ? Math.round((stats.succeeded / stats.executions) * 100)
-      : null;
-
-    els.statTotal.textContent = String(total);
-    els.statTotalHint.textContent = paused ? `${paused} paused` : "all active";
-    els.statActive.textContent = String(active);
-    els.statActiveHint.textContent = active ? "running on interval" : "nothing scheduled";
-    els.statRuns.textContent = String(stats.executions);
-    els.statRunsHint.textContent = stats.executions
-      ? `${stats.failed} failed · ${stats.retried} retried`
-      : "no runs yet";
+    const stats = store.stats;
+    if (!stats) return;
+    const paused = stats.total_tasks - stats.active_tasks;
+    const rate = stats.runs_24h ? Math.round((stats.succeeded_24h / stats.runs_24h) * 100) : null;
+    els.statTotal.textContent = String(stats.total_tasks);
+    els.statTotalHint.textContent = !stats.total_tasks ? "no tasks yet" : paused ? `${paused} paused or complete` : "all active";
+    els.statActive.textContent = String(stats.active_tasks);
+    els.statActiveHint.textContent = stats.active_tasks ? "enabled schedules" : "nothing scheduled";
+    els.statRuns.textContent = String(stats.runs_24h);
+    els.statRunsHint.textContent = stats.runs_24h
+      ? `${stats.failed_24h} failed · ${stats.retried_24h} retried` : "no completed runs yet";
     els.statRate.textContent = rate === null ? "—" : `${rate}%`;
-    els.statRateHint.textContent = rate === null
-      ? "no data yet"
-      : `${stats.succeeded}/${stats.executions} executions ok`;
+    els.statRateHint.textContent = rate === null ? "no data yet" : `${stats.succeeded_24h}/${stats.runs_24h} executions ok`;
   }
 
-  /* ------------------------------------------------------------ Task cards */
+
+    /* ------------------------------------------------------------ Task cards */
 
   const ACTION_LABEL = { log: "Log Message", http: "HTTP Ping" };
 
   function taskCardHtml(task) {
     const paused = task.status === "paused";
     const nextRun = task.next_run_at ? new Date(task.next_run_at).getTime() : null;
-    const countdown = nextRun ? fmtCountdown(nextRun - Date.now()) : "paused";
+    const countdown = nextRun ? fmtCountdown(nextRun - Date.now()) : paused ? "paused" : task.in_progress ? "in progress" : "completed";
     const lastRun = task.last_run_at
-      ? `${fmtClock(new Date(task.last_run_at).getTime())} · ${
-          task.last_status === "failed" ? "failed" : "ok"
-        }`
+      ? `${fmtClock(new Date(task.last_run_at).getTime())} · ${task.last_status || "unknown"}`
       : "never run";
+    const safeId = escapeHtml(task.id);
 
     return `
-      <article class="task-card${paused ? " is-paused" : ""}" data-task-id="${task.id}">
+      <article class="task-card${paused ? " is-paused" : ""}" data-task-id="${safeId}">
         <div class="task-main">
           <div class="task-title-row">
             <h3 class="task-name" title="${escapeHtml(task.name)}">${escapeHtml(task.name)}</h3>
             <span class="badge ${paused ? "badge--paused" : "badge--active"}">
-              ${paused ? "Paused" : "Active"}
+              ${paused ? "Paused" : task.completed ? "Complete" : "Active"}
             </span>
             <span class="badge badge--type">${escapeHtml(ACTION_LABEL[task.action_type] || task.action_type)}</span>
           </div>
 
           <div class="task-meta">
-            <span>Every <strong>${escapeHtml(fmtInterval(task.interval_seconds))}</strong></span>
+            <span><strong>${escapeHtml(task.schedule_label)}</strong></span>
             <span class="sep">·</span>
             <span>Next run
-              <strong data-countdown-for="${task.id}">${countdown}</strong>
+              <strong data-countdown-for="${safeId}">${countdown}</strong>
             </span>
             <span class="sep">·</span>
             <span>Last: ${escapeHtml(lastRun)}</span>
@@ -907,15 +516,15 @@
         </div>
 
         <div class="task-actions">
-          <button class="btn btn--sm" type="button" data-op="history" data-id="${task.id}">
+          <button class="btn btn--sm" type="button" data-op="history" data-id="${safeId}">
             View history
           </button>
-          <button class="btn btn--sm btn--ghost" type="button" data-op="run" data-id="${task.id}"
+          <button class="btn btn--sm btn--ghost" type="button" data-op="run" data-id="${safeId}"
                   ${paused ? "disabled" : ""}>Run now</button>
-          <button class="btn btn--sm btn--ghost" type="button" data-op="toggle" data-id="${task.id}">
+          <button class="btn btn--sm btn--ghost" type="button" data-op="toggle" data-id="${safeId}">
             ${paused ? "Resume" : "Pause"}
           </button>
-          <button class="icon-btn" type="button" data-op="delete" data-id="${task.id}"
+          <button class="icon-btn" type="button" data-op="delete" data-id="${safeId}"
                   aria-label="Delete ${escapeHtml(task.name)}" title="Delete task">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
@@ -924,7 +533,7 @@
         </div>
 
         <div class="task-progress" aria-hidden="true">
-          <i data-progress-for="${task.id}"></i>
+          <i data-progress-for="${safeId}"></i>
         </div>
       </article>`;
   }
@@ -937,11 +546,14 @@
         )
       : store.tasks;
 
-    els.taskCountLabel.textContent = store.tasks.length
-      ? `${visible.length} of ${store.tasks.length} task${store.tasks.length === 1 ? "" : "s"}${
-          term ? ` matching “${searchTerm}”` : ""
-        }`
+    const total = store.stats?.total_tasks || 0;
+    els.taskCountLabel.textContent = total
+      ? `Showing ${visible.length} on this page · ${total} total${term ? ` · matching “${searchTerm}”` : ""}`
       : "No tasks yet";
+    els.pagination.hidden = total <= PAGE_SIZE && pageOffset === 0;
+    els.prevPage.disabled = pageOffset === 0;
+    els.nextPage.disabled = pageOffset + PAGE_SIZE >= total;
+    els.pageLabel.textContent = `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`;
 
     if (!visible.length) {
       els.taskList.innerHTML = `
@@ -966,12 +578,11 @@
     // Flash cards whose latest run changed since the previous poll.
     const nextSignature = new Map();
     store.tasks.forEach((task) => {
-      const newest = store.runs.find((r) => r.task_id === task.id);
-      const signature = `${task.last_run_at}|${newest ? newest.id : ""}`;
+      const signature = `${task.last_run_at}|${task.last_status}`;
       nextSignature.set(task.id, signature);
       const before = previousSignature.get(task.id);
       if (before && before !== signature) {
-        const card = els.taskList.querySelector(`[data-task-id="${task.id}"]`);
+        const card = $$("[data-task-id]", els.taskList).find((node) => node.dataset.taskId === task.id);
         if (card) {
           card.classList.add("is-just-ran");
           setTimeout(() => card.classList.remove("is-just-ran"), 950);
@@ -986,13 +597,15 @@
   /** Patches countdown text + progress bars once a second (no full re-render). */
   function updateCountdowns() {
     const now = Date.now();
+    const labels = new Map($$("[data-countdown-for]", els.taskList).map((node) => [node.dataset.countdownFor, node]));
+    const bars = new Map($$("[data-progress-for]", els.taskList).map((node) => [node.dataset.progressFor, node]));
     store.tasks.forEach((task) => {
-      const label = els.taskList.querySelector(`[data-countdown-for="${task.id}"]`);
-      const bar = els.taskList.querySelector(`[data-progress-for="${task.id}"]`);
+      const label = labels.get(task.id);
+      const bar = bars.get(task.id);
       if (!label) return;
 
       if (task.status === "paused" || !task.next_run_at) {
-        label.textContent = "paused";
+        label.textContent = task.status === "paused" ? "paused" : task.in_progress ? "in progress" : "completed";
         if (bar) bar.style.width = "0%";
         return;
       }
@@ -1003,11 +616,11 @@
       if (bar) {
         const interval = Number(task.interval_seconds) * 1000;
         const elapsed = interval - (next - now);
-        bar.style.width = `${clamp((elapsed / interval) * 100, 0, 100)}%`;
+        bar.style.width = interval > 0 ? `${clamp((elapsed / interval) * 100, 0, 100)}%` : "0%";
       }
     });
 
-    if (lastSyncAt) {
+    if (lastSyncAt && !els.syncChip.classList.contains("is-offline")) {
       const age = Math.round((now - lastSyncAt) / 1000);
       els.syncText.textContent =
         age <= 1 ? "Synced just now" : `Synced ${age}s ago · poll 5s`;
@@ -1052,12 +665,8 @@
       const original = button.textContent;
       button.textContent = "Running…";
       try {
-        const run = await api.runNow(id);
-        toast(
-          run.status === "success" ? "Run succeeded" : "Run failed",
-          run.detail,
-          run.status === "success" ? "success" : "error"
-        );
+        await api.runNow(id);
+        toast("Run queued", "Check its history for the result.", "success");
         await refreshTasks({ silent: true });
       } catch (error) {
         toast("Trigger failed", error.message, "error");
@@ -1075,12 +684,22 @@
       if (!confirmed) return;
       try {
         await api.deleteTask(id);
+        if (store.tasks.length === 1 && pageOffset > 0) pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
         toast("Task deleted", `“${task.name}” was removed.`, "info");
         await refreshTasks({ silent: true });
       } catch (error) {
         toast("Delete failed", error.message, "error");
       }
     }
+  });
+
+  els.prevPage.addEventListener("click", () => {
+    pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
+    refreshTasks({ silent: true });
+  });
+  els.nextPage.addEventListener("click", () => {
+    pageOffset += PAGE_SIZE;
+    refreshTasks({ silent: true });
   });
 
   els.taskSearch.addEventListener("input", (event) => {
@@ -1108,7 +727,7 @@
     },
     http: {
       label: "URL to ping",
-      hint: "The worker sends a GET request and records the status code. Include “fail” in the URL to simulate an outage.",
+      hint: "The worker sends a GET request to a permitted public URL. Failed attempts retry after 60 seconds.",
       placeholder: "https://api.example.com/health",
     },
   };
@@ -1119,7 +738,7 @@
     payloadHint.textContent = copy.hint;
     payloadInput.placeholder = copy.placeholder;
     payloadInput.value = "";
-    setFieldError("payload", "");
+    setError("payload", "");
   }
 
   actionSelect.addEventListener("change", syncPayloadField);
@@ -1209,8 +828,8 @@
     createBtn.textContent = "Scheduling…";
 
     try {
-      /* ---- REAL API: POST /tasks (see api.createTask) ---- */
       const task = await api.createTask(values);
+      pageOffset = 0;
       toast("Task scheduled", `“${task.name}” first runs ${fmtCountdown(
         new Date(task.next_run_at).getTime() - Date.now()
       )}.`, "success");
@@ -1441,38 +1060,50 @@
   const historySub = $("#historySub");
   const historySummary = $("#historySummary");
   const historyBody = $("#historyBody");
+  const historyPagination = $("#historyPagination");
+  const historyPrev = $("#historyPrev");
+  const historyNext = $("#historyNext");
+  const historyPageLabel = $("#historyPageLabel");
   let lastFocused = null;
+  let historyTask = null;
+  let historyOffset = 0;
+  let historyRequest = 0;
 
-  async function openHistory(task) {
-    lastFocused = document.activeElement;
+  async function openHistory(task, offset = 0) {
+    if (historyModal.hidden) lastFocused = document.activeElement;
+    historyTask = task;
+    historyOffset = offset;
+    const request = ++historyRequest;
     historyTitle.textContent = task.name;
-    historySub.textContent = `${ACTION_LABEL[task.action_type] || task.action_type} · every ${fmtInterval(
-      task.interval_seconds
-    )} · max ${task.max_retries} retr${Number(task.max_retries) === 1 ? "y" : "ies"}`;
+    historySub.textContent = `${ACTION_LABEL[task.action_type] || task.action_type} · ${task.schedule_label} · max ${task.max_retries} retr${Number(task.max_retries) === 1 ? "y" : "ies"}`;
     historySummary.innerHTML = "";
+    historyPagination.hidden = true;
     historyBody.innerHTML = `<p class="field__hint" style="padding:1rem 0">Loading runs…</p>`;
     historyModal.hidden = false;
     historyModal.querySelector(".modal__panel").focus();
 
     try {
-      /* ---- REAL API: GET /tasks/{id}/runs (see api.listRuns) ---- */
-      const runs = (await api.listRuns(task.id)).sort(
-        (a, b) => new Date(b.started_at) - new Date(a.started_at)
-      );
-
-      const ok = runs.filter((r) => r.status === "success").length;
-      const failed = runs.length - ok;
-      const retries = runs.filter((r) => Number(r.attempt) > 1).length;
-      const avg = runs.length
-        ? Math.round(runs.reduce((sum, r) => sum + (r.duration_ms || 0), 0) / runs.length)
-        : 0;
-
+      const page = await api.listRuns(task.id, offset);
+      if (request !== historyRequest) return;
+      const runs = page.attempts.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+      const attempts = runs.filter((r) => r.attempt > 0);
+      const ok = attempts.filter((r) => r.status === "success").length;
+      const failed = attempts.filter((r) => r.status === "failed").length;
+      const retries = attempts.filter((r) => Number(r.attempt) > 1).length;
+      const finished = attempts.filter((r) => r.duration_ms !== null);
+      const avg = finished.length
+        ? fmtDuration(Math.round(finished.reduce((sum, r) => sum + r.duration_ms, 0) / finished.length)) : "—";
+      historyPagination.hidden = offset === 0 && !page.hasMore;
+      historyPrev.disabled = offset === 0;
+      historyNext.disabled = !page.hasMore;
+      historyPageLabel.textContent = `Runs ${offset + 1}–${offset + page.runCount}`;
       historySummary.innerHTML = `
-        <span class="chip">Runs <strong>${runs.length}</strong></span>
+        <span class="chip">Runs <strong>${page.runCount}</strong></span>
+        <span class="chip">Attempts <strong>${attempts.length}</strong></span>
         <span class="chip chip--ok">Succeeded <strong>${ok}</strong></span>
         <span class="chip chip--bad">Failed <strong>${failed}</strong></span>
         <span class="chip">Retry attempts <strong>${retries}</strong></span>
-        <span class="chip">Avg duration <strong>${fmtDuration(avg)}</strong></span>`;
+        <span class="chip">Avg duration <strong>${avg}</strong></span>`;
 
       if (!runs.length) {
         historyBody.innerHTML = `
@@ -1500,15 +1131,15 @@
                 (run) => `
               <tr>
                 <td>
-                  <span class="badge ${run.status === "success" ? "badge--success" : "badge--failed"}">
-                    ${run.status === "success" ? "Success" : "Failed"}
+                  <span class="badge ${run.status === "success" ? "badge--success" : run.status === "failed" ? "badge--failed" : "badge--paused"}">
+                    ${escapeHtml(run.status === "success" ? "Success" : run.status)}
                   </span>
                 </td>
                 <td class="mono">${escapeHtml(
                   fmtDateTime(new Date(run.started_at).getTime())
                 )}</td>
-                <td class="mono">${fmtDuration(run.duration_ms || 0)}</td>
-                <td class="mono">${Number(run.attempt) > 1 ? `retry ${run.attempt}` : "1"}</td>
+                <td class="mono">${run.duration_ms === null ? "—" : fmtDuration(run.duration_ms)}</td>
+                <td class="mono">${Number(run.attempt) > 1 ? `retry ${Number(run.attempt) - 1}` : run.attempt || "—"}</td>
                 <td class="detail">${escapeHtml(run.detail || "—")}</td>
               </tr>`
               )
@@ -1516,13 +1147,18 @@
           </tbody>
         </table>`;
     } catch (error) {
+      if (request !== historyRequest) return;
       historyBody.innerHTML = `<p class="field__error" style="padding:1rem 0">
         Could not load history: ${escapeHtml(error.message || "unknown error")}
       </p>`;
     }
   }
 
+  historyPrev.addEventListener("click", () => openHistory(historyTask, Math.max(0, historyOffset - HISTORY_PAGE_SIZE)));
+  historyNext.addEventListener("click", () => openHistory(historyTask, historyOffset + HISTORY_PAGE_SIZE));
+
   function closeHistory() {
+    historyRequest += 1;
     historyModal.hidden = true;
     if (lastFocused && typeof lastFocused.focus === "function") lastFocused.focus();
   }
@@ -1565,6 +1201,5 @@
   /* ============================================================== 11. Boot */
 
   renderAuthSlot();
-  setAuthMode("login");
   renderRoute();
 })();

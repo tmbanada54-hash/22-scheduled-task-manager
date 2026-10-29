@@ -43,7 +43,12 @@ class OnceSchedule(StrictModel):
         return as_utc(value)
 
 
-Schedule = Annotated[CronSchedule | OnceSchedule, Field(discriminator="type")]
+class IntervalSchedule(StrictModel):
+    type: Literal["interval"]
+    seconds: int = Field(ge=5, le=86400, strict=True)
+
+
+Schedule = Annotated[CronSchedule | IntervalSchedule | OnceSchedule, Field(discriminator="type")]
 
 
 class RetryPolicy(StrictModel):
@@ -70,7 +75,9 @@ _RESERVED_HEADERS = {
 class TaskCreate(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
-    url: str
+    action_type: Literal["http", "log"] = "http"
+    url: str | None = None
+    message: str | None = Field(default=None, max_length=500)
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     headers: dict[str, str] = Field(default_factory=dict)
     body: JsonValue | None = None
@@ -89,8 +96,9 @@ class TaskCreate(StrictModel):
 
     @field_validator("url")
     @classmethod
-    def valid_url(cls, value: str) -> str:
-        parse_target_url(value)
+    def valid_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_target_url(value)
         return value
 
     @field_validator("headers")
@@ -115,10 +123,17 @@ class TaskCreate(StrictModel):
 
     @model_validator(mode="after")
     def valid_body(self) -> "TaskCreate":
+        if self.action_type == "http":
+            if not self.url or self.message is not None:
+                raise ValueError("HTTP tasks require a URL and cannot include a log message")
+        else:
+            if self.message is None or not self.message.strip():
+                raise ValueError("Log tasks require a non-empty message")
+            if self.url is not None or self.headers or self.body is not None:
+                raise ValueError("Log tasks cannot include an HTTP URL, headers, or body")
         try:
-            strings = [self.name, self.url, *(item for pair in self.headers.items() for item in pair)]
-            if self.description is not None:
-                strings.append(self.description)
+            strings = [self.name, *(item for pair in self.headers.items() for item in pair)]
+            strings.extend(value for value in (self.url, self.message, self.description) if value is not None)
             for value in strings:
                 value.encode("utf-8")
         except UnicodeError as exc:
@@ -138,7 +153,9 @@ class TaskCreate(StrictModel):
 class TaskPatch(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    action_type: Literal["http", "log"] | None = None
     url: str | None = None
+    message: str | None = Field(default=None, max_length=500)
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] | None = None
     headers: dict[str, str] | None = None
     body: JsonValue | None = None
@@ -152,20 +169,40 @@ class TaskPatch(StrictModel):
     def reject_empty_or_null(cls, value):
         if not isinstance(value, dict) or not value:
             raise ValueError("Provide at least one field to update")
-        for field in ("name", "url", "method", "headers", "schedule", "retry", "timeout_seconds", "enabled"):
+        for field in (
+            "name",
+            "action_type",
+            "method",
+            "headers",
+            "schedule",
+            "retry",
+            "timeout_seconds",
+            "enabled",
+        ):
             if field in value and value[field] is None:
                 raise ValueError(f"{field} cannot be null")
         return value
 
 
+RunStatus = Literal["queued", "running", "retrying", "succeeded", "failed"]
+
+
 class TaskOut(TaskCreate):
     id: str
     next_run_at: datetime | None
+    last_run_at: datetime | None
+    last_status: RunStatus | None
     created_at: datetime
     updated_at: datetime
 
 
-RunStatus = Literal["queued", "running", "retrying", "succeeded", "failed"]
+class StatsOut(StrictModel):
+    total_tasks: int
+    active_tasks: int
+    runs_24h: int
+    succeeded_24h: int
+    failed_24h: int
+    retried_24h: int
 
 
 class AttemptOut(StrictModel):
@@ -175,6 +212,7 @@ class AttemptOut(StrictModel):
     finished_at: datetime | None
     http_status: int | None
     error: str | None
+    output: str | None
 
 
 class RunOut(StrictModel):

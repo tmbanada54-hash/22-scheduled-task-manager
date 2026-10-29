@@ -1,17 +1,11 @@
-name: Backend
+name: Integration
 
 on:
   push:
-    paths:
-      - 'backend/**'
-      - '.github/workflows/backend.yml'
   pull_request:
-    paths:
-      - 'backend/**'
-      - '.github/workflows/backend.yml'
 
 jobs:
-  test:
+  backend:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,3 +22,73 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
       - run: python -m pytest -q
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: python -m pip install -r backend/requirements.txt
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test the deployable image and persistent volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY=ci-container-key docker compose config >/dev/null
+          docker build -f backend/Dockerfile -t tickwise:ci .
+          docker volume create tickwise-ci-data >/dev/null
+          cleanup() {
+            docker logs tickwise-ci || true
+            docker rm -f tickwise-ci >/dev/null 2>&1 || true
+            docker volume rm tickwise-ci-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          start_container() {
+            docker run -d --name tickwise-ci -p 127.0.0.1:18000:8000 \
+              -e API_KEY=ci-container-key -v tickwise-ci-data:/data tickwise:ci >/dev/null
+            for i in $(seq 1 60); do
+              if curl -fsS http://127.0.0.1:18000/health >/dev/null; then return; fi
+              sleep 1
+            done
+            echo 'Container did not become healthy' >&2
+            return 1
+          }
+          start_container
+          curl -fsS http://127.0.0.1:18000/ | grep -q Tickwise
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18000/api/v1/tasks)" = 401
+          task_id=$(curl -fsS -H 'X-API-Key: ci-container-key' -H 'Content-Type: application/json' \
+            -d '{"name":"Container smoke","action_type":"log","message":"container works","schedule":{"type":"interval","seconds":3600}}' \
+            http://127.0.0.1:18000/api/v1/tasks | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          curl -fsS -X POST -H 'X-API-Key: ci-container-key' \
+            "http://127.0.0.1:18000/api/v1/tasks/$task_id/runs" >/dev/null
+          success=false
+          for i in $(seq 1 30); do
+            if curl -fsS -H 'X-API-Key: ci-container-key' \
+              "http://127.0.0.1:18000/api/v1/tasks/$task_id/runs" | \
+              python3 -c 'import json,sys; runs=json.load(sys.stdin); sys.exit(not (runs and runs[0]["status"] == "succeeded" and runs[0]["attempts"][0]["output"] == "container works"))'; then
+              success=true
+              break
+            fi
+            sleep 1
+          done
+          test "$success" = true
+          docker rm -f tickwise-ci >/dev/null
+          start_container
+          curl -fsS -H 'X-API-Key: ci-container-key' \
+            "http://127.0.0.1:18000/api/v1/tasks/$task_id" | \
+            python3 -c 'import json,sys; assert json.load(sys.stdin)["name"] == "Container smoke"'

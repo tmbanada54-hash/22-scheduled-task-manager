@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import socket
 from dataclasses import dataclass
 from functools import partial
@@ -11,6 +12,8 @@ from aiohttp.resolver import ThreadedResolver
 
 from .config import Settings
 from .security import TargetPolicy, is_public_address
+
+logger = logging.getLogger(__name__)
 
 
 class BlockedAddressError(OSError):
@@ -68,6 +71,10 @@ class DeliveryClient:
         if self.session is None:
             raise RuntimeError("Delivery client has not been started")
         snapshot = claim["snapshot"]
+        if snapshot.get("action_type", "http") == "log":
+            # %r escapes newlines and other control characters in service logs.
+            logger.info("Log task %s run %s: %r", claim["task_id"], claim["run_id"], snapshot["message"])
+            return DeliveryResult(None, None)
         try:
             # Check policy again at execution time, including literal IPs, which bypass DNS.
             self.policy.validate_url(snapshot["url"])

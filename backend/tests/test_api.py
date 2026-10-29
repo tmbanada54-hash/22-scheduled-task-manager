@@ -9,8 +9,10 @@ from app.main import create_app
 
 def test_crud_manual_runs_and_history(client, task_payload):
     assert client.get("/health").json() == {"status": "ok", "database": "ok", "scheduler": "disabled"}
-    assert client.get("/", follow_redirects=False).headers["location"] == "/docs"
-    assert client.get("/", follow_redirects=True).status_code == 200
+    assert "Tickwise" in client.get("/").text
+    assert client.get("/app.js").status_code == 200
+    assert client.get("/styles.css").status_code == 200
+    assert client.get("/database/schema.sqlite.sql").status_code == 404
     assert client.get("/openapi.json").status_code == 200
     created = client.post("/api/v1/tasks", json=task_payload)
     assert created.status_code == 201, created.text

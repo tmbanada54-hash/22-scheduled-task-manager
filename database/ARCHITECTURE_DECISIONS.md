@@ -1,5 +1,7 @@
 # Architecture Decisions — Database Team
 
+> **Archived design, not the running application.** This database-team document describes a PostgreSQL/Prisma prototype using `executions` and `retry_queue`. The integrated service uses SQLite `tasks`, `runs`, and `attempts`; see [the runtime database guide](README.md) and [API documentation](../README.md#api). PostgreSQL support and migration of prototype data are not implemented.
+
 ## 1. Why Postgres + SQLite dual schema?
 
 - **Postgres** is free on Supabase/Neon/Render and supports `JSONB`, `TIMESTAMPTZ`, partial indexes, and `FOR UPDATE SKIP LOCKED` — all needed for reliable scheduling.

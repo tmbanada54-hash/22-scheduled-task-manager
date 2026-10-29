@@ -39,7 +39,7 @@
               <path d="M12 2v2.2M12 19.8V22M2 12h2.2M19.8 12H22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6" />
             </svg>
           </button>
-          <!-- Filled by app.js depending on the (mock) session state -->
+          <!-- Workspace access controls are filled by app.js -->
           <div class="auth-slot" id="authSlot"></div>
         </div>
       </div>
@@ -57,7 +57,7 @@
               Hackathon MVP · 4-day build
             </span>
             <h1 class="hero__title">
-              Recurring tasks that <span class="gradient-text">never&nbsp;miss a&nbsp;beat.</span>
+              Recurring tasks made <span class="gradient-text">simple&nbsp;to&nbsp;manage.</span>
             </h1>
             <p class="hero__lede">
               Schedule any job by interval in seconds, watch the next execution count down live,
@@ -152,7 +152,7 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10" /></svg>
               </span>
               <h3>Full execution history</h3>
-              <p>Success or failure, timestamp, duration, attempt count and the worker's response — per task, in a modal.</p>
+              <p>Success or failure, timestamp, duration, attempt count and status — per task, in a modal.</p>
             </article>
             <article class="feature">
               <span class="feature__icon">
@@ -207,7 +207,7 @@
           <div class="cta-band">
             <div>
               <h2>Ready to schedule your first task?</h2>
-              <p>No sign-up needed for the demo — the dashboard ships with seeded data.</p>
+              <p>Connect to your workspace and start with a real, persistent task.</p>
             </div>
             <a class="btn btn--primary btn--lg" href="#/auth">Get started free</a>
           </div>
@@ -216,13 +216,13 @@
         <footer class="footer">
           <div class="wrap footer__inner">
             <span>Tickwise · Scheduled Task Manager MVP</span>
-            <span>HTML · CSS · Vanilla JS · FastAPI-ready</span>
+            <span>HTML · CSS · Vanilla JS · FastAPI</span>
           </div>
         </footer>
       </section>
 
       <!-- ==================================================================
-           VIEW 2 — AUTH (visual only, no real authentication in the MVP)
+           VIEW 2 — WORKSPACE ACCESS (shared API key; no mock accounts)
            ================================================================== -->
       <section class="view" id="view-auth" data-view="auth">
         <div class="wrap auth-wrap">
@@ -243,45 +243,22 @@
                 <li>Keep an audit trail of every attempt</li>
               </ul>
               <p class="auth-aside__note">
-                MVP note: authentication is mocked. Any valid-looking email and a 6+ character
-                password opens the dashboard.
+                This workspace uses a shared API key when configured. It does not yet provide separate user accounts.
               </p>
             </aside>
-
             <div class="auth-form-wrap">
-              <div class="tabs" role="tablist" aria-label="Authentication mode">
-                <button class="tab is-active" id="tabLogin" type="button" role="tab" aria-selected="true" data-auth-tab="login">Log in</button>
-                <button class="tab" id="tabSignup" type="button" role="tab" aria-selected="false" data-auth-tab="signup">Sign up</button>
-              </div>
-
-              <h2 class="auth-title" id="authTitle">Welcome back</h2>
-              <p class="auth-sub" id="authSub">Log in to manage your scheduled tasks.</p>
-
+              <h2 class="auth-title">Connect to your workspace</h2>
+              <p class="auth-sub">Enter the deployment's API key, or leave it blank for a local workspace without a key.</p>
               <form id="authForm" novalidate>
-                <div class="field" id="nameField" hidden>
-                  <label class="field__label" for="authName">Full name</label>
-                  <input class="input" id="authName" name="name" type="text" placeholder="Ada Lovelace" autocomplete="name" />
-                  <p class="field__error" data-error-for="authName" hidden></p>
-                </div>
-
                 <div class="field">
-                  <label class="field__label" for="authEmail">Work email</label>
-                  <input class="input" id="authEmail" name="email" type="email" placeholder="you@company.com" autocomplete="email" required />
-                  <p class="field__error" data-error-for="authEmail" hidden></p>
+                  <label class="field__label" for="authKey">Workspace API key</label>
+                  <input class="input" id="authKey" name="apiKey" type="password" placeholder="Optional for local development" autocomplete="off" />
+                  <p class="field__error" data-error-for="authKey" hidden></p>
+                  <p class="field__hint">The key is kept only in this browser tab.</p>
                 </div>
-
-                <div class="field">
-                  <label class="field__label" for="authPassword">Password</label>
-                  <input class="input" id="authPassword" name="password" type="password" placeholder="At least 6 characters" autocomplete="current-password" required />
-                  <p class="field__error" data-error-for="authPassword" hidden></p>
-                </div>
-
-                <button class="btn btn--primary btn--block" type="submit" id="authSubmit">Log in</button>
+                <button class="btn btn--primary btn--block" type="submit" id="authSubmit">Open dashboard</button>
               </form>
-
-              <p class="auth-foot">
-                <a href="#/dashboard" class="link">Skip and open the demo dashboard →</a>
-              </p>
+              <p class="auth-foot"><a href="#/dashboard" class="link">Continue without a key →</a></p>
             </div>
           </div>
         </div>
@@ -338,7 +315,7 @@
             <form class="panel form-panel" id="taskForm" novalidate>
               <div class="panel__head">
                 <h2>Create a task</h2>
-                <p>It starts running as soon as you submit.</p>
+                <p>The first run is one interval after you schedule it.</p>
               </div>
 
               <div class="field">
@@ -439,7 +416,7 @@
               </div>
 
               <p class="panel__foot">
-                Stored via <code>POST /tasks</code> · validated on both client and server.
+                Stored via <code>POST /api/v1/tasks</code> · validated on both client and server.
               </p>
             </form>
 
@@ -454,11 +431,16 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <circle cx="11" cy="11" r="7" /><path d="m16.5 16.5 4 4" />
                   </svg>
-                  <input id="taskSearch" type="search" placeholder="Filter tasks…" aria-label="Filter tasks by name" />
+                  <input id="taskSearch" type="search" placeholder="Filter this page…" aria-label="Filter tasks on this page" />
                 </div>
               </div>
 
               <div class="task-list" id="taskList" aria-live="polite"></div>
+              <div class="pagination" id="taskPagination" hidden>
+                <button class="btn btn--sm btn--ghost" type="button" id="prevPage">Previous</button>
+                <span id="pageLabel" aria-live="polite"></span>
+                <button class="btn btn--sm btn--ghost" type="button" id="nextPage">Next</button>
+              </div>
             </section>
           </div>
         </div>
@@ -482,6 +464,11 @@
       </header>
       <div class="modal__summary" id="historySummary"></div>
       <div class="modal__body" id="historyBody"></div>
+      <div class="pagination modal__pagination" id="historyPagination" hidden>
+        <button class="btn btn--sm btn--ghost" type="button" id="historyPrev">Previous</button>
+        <span id="historyPageLabel" aria-live="polite"></span>
+        <button class="btn btn--sm btn--ghost" type="button" id="historyNext">Next</button>
+      </div>
     </div>
   </div>
 

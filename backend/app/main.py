@@ -4,23 +4,25 @@ import hmac
 import json
 import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, Security, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
 from .config import Settings
 from .limits import RequestSizeLimitMiddleware
-from .models import RunOut, RunStatus, TaskCreate, TaskOut, TaskPatch
+from .models import RunOut, RunStatus, StatsOut, TaskCreate, TaskOut, TaskPatch
 from .repository import ConflictError, InputError, NotFoundError, Repository
 from .scheduler import Scheduler
 from .schedules import utc_now
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -41,7 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Scheduled Task Manager API",
-        description="Schedule HTTP tasks, inspect their outcomes, and retry failures.",
+        description="Schedule HTTP and log tasks, inspect their outcomes, and retry failures.",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -79,11 +81,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def input_handler(request: Request, exc: InputError):
         return validation_response(exc.detail)
 
+    # Serve only the frontend's public files, never the repository or database.
     @app.get("/", include_in_schema=False)
-    def root(request: Request):
-        # Make the API's interactive documentation the default preview page.
-        root_path = request.scope.get("root_path", "").rstrip("/")
-        return RedirectResponse(url=f"{root_path}/docs")
+    def root():
+        return FileResponse(PROJECT_ROOT / "index.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/app.js", include_in_schema=False)
+    def frontend_script():
+        return FileResponse(PROJECT_ROOT / "app.js", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/styles.css", include_in_schema=False)
+    def frontend_styles():
+        return FileResponse(PROJECT_ROOT / "styles.css", headers={"Cache-Control": "no-cache"})
 
     @app.get("/health", tags=["Operations"])
     def health():
@@ -116,6 +125,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     Limit = Annotated[int, Query(ge=1, le=100)]
     Offset = Annotated[int, Query(ge=0, le=2**63 - 1)]
     StatusFilter = Annotated[RunStatus | None, Query(alias="status")]
+
+    @router.get("/stats", response_model=StatsOut, tags=["Operations"])
+    def dashboard_stats():
+        return repository.dashboard_stats(utc_now())
 
     @router.post("/tasks", response_model=TaskOut, status_code=status.HTTP_201_CREATED, tags=["Tasks"])
     def create_task(task: TaskCreate):

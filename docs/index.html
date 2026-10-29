@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Scheduled Task Manager — Database Docs</title>
+<title>Archived PostgreSQL Prototype — Database Docs</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family: Inter, -apple-system, sans-serif; background:#0f1115; color:#e6e8eb; line-height:1.6}
@@ -52,6 +52,12 @@
 </style>
 </head>
 <body>
+<div role="note" style="background:#533011;color:#fff2d4;padding:16px 24px;border-bottom:2px solid #ffbd59">
+  <strong>Archived database-team PostgreSQL prototype — not the running application.</strong>
+  The integrated service uses SQLite tables <code>tasks</code>, <code>runs</code>, and <code>attempts</code>.
+  See <a href="../database/README.md" style="color:#fff">the runtime database guide</a> and
+  <a href="ER_DIAGRAM.md" style="color:#fff">runtime ER diagram</a>. PostgreSQL/Prisma are not implemented.
+</div>
 <header>
   <div style="max-width:1100px; margin:0 auto">
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
@@ -185,19 +191,19 @@ VALUES ($taskId, 2, $parentId, true, 'retry');</pre>
 
   <div class="grid">
     <div class="card">
-      <h3>What This Branch Delivers</h3>
+      <h3>Original Prototype Files</h3>
       <table>
         <tr><th>File</th><th>Purpose</th></tr>
-        <tr><td><code>schema.sql</code></td><td>Postgres main schema (production)</td></tr>
-        <tr><td><code>schema.sqlite.sql</code></td><td>SQLite fallback (local/D1)</td></tr>
+        <tr><td><code>schema.sql</code></td><td>Archived PostgreSQL prototype (not runtime)</td></tr>
+        <tr><td><code>schema.sqlite.sql</code></td><td>SQLite v2 runtime schema (different model; see runtime guide)</td></tr>
         <tr><td><code>seed.sql</code></td><td>6 tasks + 11 executions</td></tr>
         <tr><td><code>QUERIES.md</code></td><td>Scheduler / dashboard / retry queries</td></tr>
-        <tr><td><code>prisma.schema.example</code></td><td>Prisma-ready if team uses it</td></tr>
+        <tr><td><code>prisma.schema.example</code></td><td>Unintegrated Prisma example</td></tr>
         <tr><td><code>api-contract.md</code></td><td>Endpoints → DB mapping</td></tr>
       </table>
     </div>
     <div class="card">
-      <h3>Validation & Edge Cases</h3>
+      <h3>Proposed Validation & Edge Cases</h3>
       <table>
         <tr><th>Edge Case</th><th>Handled By</th></tr>
         <tr><td>Invalid cron</td><td>Regex CHECK + app <code>cron-validator</code></td></tr>
@@ -211,7 +217,7 @@ VALUES ($taskId, 2, $parentId, true, 'retry');</pre>
   </div>
 
   <div class="card">
-    <h3 style="color:#7cc4ff">Setup — 3 Commands</h3>
+    <h3 style="color:#7cc4ff">Historical prototype-only setup (not deployment instructions)</h3>
     <pre>psql $DATABASE_URL -f database/schema.sql   # create tables, indexes, views, triggers
 psql $DATABASE_URL -f database/seed.sql     # load 6 demo tasks + history
 psql $DATABASE_URL -c "SELECT * FROM v_task_stats ORDER BY next_run_at;"  # verify</pre>
@@ -219,14 +225,14 @@ psql $DATABASE_URL -c "SELECT * FROM v_task_stats ORDER BY next_run_at;"  # veri
   </div>
 
   <div class="card" style="border:1px solid #1e3a5f; background: linear-gradient(135deg,#171a21, #1a1f2e)">
-    <h3>Demo Script (for live presentation)</h3>
+    <h3>Historical prototype demo script</h3>
     <p style="font-size:13px; color:#d0d6dd"><em>"Our database has two core tables: <b>tasks</b> — what to run and when — and <b>executions</b> — an immutable log of every attempt. The scheduler polls <code>WHERE next_run_at &lt;= NOW()</code> using a partial index, so it's fast even with thousands of tasks. When a webhook fails, we mark the execution <b>failed</b> and schedule a retry with exponential backoff — <code>delay × 2^(attempt-1)</code> — linked via <code>parent_execution_id</code> so you can see the full chain in the UI. Views like <b>v_task_stats</b> power the dashboard without extra app logic."</em></p>
   </div>
 
 </div>
 
 <footer>
-  Branch <b>database</b> from <b>develop</b> • Scheduled Task Manager MVP • Supabase / Neon / Railway ready • Team: Scheduler / Task Runner / Persistence / UI
+  Archived database-team design proposal • Not the SQLite runtime or a supported PostgreSQL deployment
 </footer>
 </body>
 </html>

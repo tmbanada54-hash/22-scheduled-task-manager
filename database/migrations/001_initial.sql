@@ -1,15 +1,7 @@
--- Migration: 001_initial
--- Description: Initial schema for Scheduled Task Manager MVP
--- Created: 2026-10-29
--- Branch: database
-
-\echo 'Running migration 001_initial...'
-\echo 'This file is identical to database/schema.sql — kept for migration tooling'
-
--- Migration tools (golang-migrate, dbmate, Supabase CLI) expect idempotent files.
--- For this MVP, we use the main schema.sql as source of truth.
--- Copy contents of schema.sql here OR import it:
-
-\i database/schema.sql
-
-\echo 'Migration 001_initial completed.'
+-- ARCHIVED POSTGRESQL PROTOTYPE ONLY, not used by the running application.
+-- This is a psql include, not a portable or idempotent migration-tool file.
+-- Run from psql only against a new, disposable PostgreSQL prototype database;
+-- pgcrypto and pg_trgm extension privileges are required. It has not been
+-- validated as a production migration or an upgrade path for SQLite data.
+\echo 'Loading archived PostgreSQL prototype schema (not the runtime database)...'
+\ir ../schema.sql

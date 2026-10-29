@@ -1,3 +1,6 @@
+-- ARCHIVED POSTGRESQL PROTOTYPE: not used by the running SQLite application.
+-- Prototype data cannot be opened or migrated automatically by the backend.
+
 -- ============================================================
 -- Scheduled Task Manager — PostgreSQL Schema (MVP v1.0)
 -- Compatible with: Postgres 14+, Supabase, Neon, Railway, Render
@@ -6,6 +9,7 @@
 
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"; -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- required by the gin_trgm_ops index below
 -- For Supabase: also available as uuid_generate_v4() via pgcrypto
 -- Alternative: CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 

@@ -1,130 +1,83 @@
--- ============================================================
--- Scheduled Task Manager — SQLite Schema (MVP Lightweight)
--- For local dev, demos, file-based persistence, or Cloudflare D1
--- Same data model as schema.sql, adapted for SQLite
--- ============================================================
+-- Tickwise runtime schema, version 2 (SQLite 3.25+).
+-- This is the schema used by the FastAPI backend. All timestamps are UTC.
+-- Do not run this on the database team's earlier, incompatible prototype.
 
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-
--- ============================================================
--- TABLE: tasks
--- ============================================================
 CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY, -- UUID as TEXT (generate in app: uuid.v4())
-    name TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 120),
     description TEXT,
-    task_type TEXT NOT NULL DEFAULT 'webhook' CHECK (task_type IN ('webhook','http','command','email','custom')),
-    payload TEXT NOT NULL DEFAULT '{}', -- JSON string
-    schedule_type TEXT NOT NULL DEFAULT 'cron' CHECK (schedule_type IN ('cron','interval','once')),
+    action_type TEXT NOT NULL DEFAULT 'http' CHECK (action_type IN ('http', 'log')),
+    url TEXT,
+    message TEXT,
+    method TEXT NOT NULL CHECK (method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
+    headers_json TEXT NOT NULL,
+    body_json TEXT,
+    schedule_type TEXT NOT NULL CHECK (schedule_type IN ('cron', 'interval', 'once')),
     cron_expression TEXT,
     interval_seconds INTEGER,
-    run_once_at TEXT, -- ISO8601
-    timezone TEXT NOT NULL DEFAULT 'UTC',
-    next_run_at TEXT, -- ISO8601
-    last_run_at TEXT,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','disabled','archived')),
-    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0,1)),
-    max_retries INTEGER NOT NULL DEFAULT 3 CHECK (max_retries >= 0 AND max_retries <= 10),
-    retry_strategy TEXT NOT NULL DEFAULT 'exponential' CHECK (retry_strategy IN ('none','fixed','exponential','linear')),
-    retry_delay_seconds INTEGER NOT NULL DEFAULT 60,
-    timeout_seconds INTEGER NOT NULL DEFAULT 300,
-    concurrency_policy TEXT NOT NULL DEFAULT 'skip' CHECK (concurrency_policy IN ('allow','skip','queue')),
-    tags TEXT DEFAULT '[]', -- JSON array
-    priority INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    created_by TEXT,
-
-    CHECK (
-        (schedule_type = 'cron' AND cron_expression IS NOT NULL) OR (schedule_type != 'cron')
-    ),
-    CHECK (
-        (schedule_type = 'interval' AND interval_seconds IS NOT NULL) OR (schedule_type != 'interval')
-    ),
-    CHECK (
-        (schedule_type = 'once' AND run_once_at IS NOT NULL) OR (schedule_type != 'once')
-    )
+    run_at TEXT,
+    once_consumed INTEGER NOT NULL DEFAULT 0 CHECK (once_consumed IN (0, 1)),
+    max_retries INTEGER NOT NULL CHECK (max_retries BETWEEN 0 AND 10),
+    retry_delay_seconds INTEGER NOT NULL CHECK (retry_delay_seconds BETWEEN 1 AND 86400),
+    timeout_seconds INTEGER NOT NULL CHECK (timeout_seconds BETWEEN 1 AND 120),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    next_run_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK ((action_type = 'http' AND url IS NOT NULL AND message IS NULL)
+        OR (action_type = 'log' AND url IS NULL AND message IS NOT NULL)),
+    CHECK ((schedule_type = 'cron' AND cron_expression IS NOT NULL AND interval_seconds IS NULL AND run_at IS NULL)
+        OR (schedule_type = 'interval' AND cron_expression IS NULL AND interval_seconds IS NOT NULL AND interval_seconds BETWEEN 5 AND 86400 AND run_at IS NULL)
+        OR (schedule_type = 'once' AND cron_expression IS NULL AND interval_seconds IS NULL AND run_at IS NOT NULL))
 );
+CREATE INDEX IF NOT EXISTS tasks_due ON tasks(enabled, next_run_at);
 
--- Trigger for updated_at
-CREATE TRIGGER IF NOT EXISTS trg_tasks_updated_at
-AFTER UPDATE ON tasks
-FOR EACH ROW
-WHEN NEW.updated_at = OLD.updated_at
-BEGIN
-    UPDATE tasks SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = NEW.id;
-END;
-
--- ============================================================
--- TABLE: executions
--- ============================================================
-CREATE TABLE IF NOT EXISTS executions (
+CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    trigger TEXT NOT NULL CHECK (trigger IN ('scheduled', 'manual')),
     scheduled_for TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'retrying', 'succeeded', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at TEXT,
     started_at TEXT,
     finished_at TEXT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','queued','running','success','failed','timeout','skipped','cancelled')),
-    attempt_number INTEGER NOT NULL DEFAULT 1 CHECK (attempt_number >= 1),
-    duration_ms INTEGER,
-    result_output TEXT,
-    error_message TEXT,
-    http_status_code INTEGER,
-    metadata TEXT DEFAULT '{}',
-    parent_execution_id TEXT REFERENCES executions(id) ON DELETE SET NULL,
-    is_retry INTEGER NOT NULL DEFAULT 0 CHECK (is_retry IN (0,1)),
-    next_retry_at TEXT,
-    triggered_by TEXT NOT NULL DEFAULT 'schedule' CHECK (triggered_by IN ('schedule','manual','retry','api')),
-    worker_id TEXT,
-    logs TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    CHECK (parent_execution_id IS NULL OR parent_execution_id != id)
+    last_http_status INTEGER,
+    last_error TEXT,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS runs_due ON runs(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS runs_task_history ON runs(task_id, created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_run_per_task ON runs(task_id)
+    WHERE status IN ('queued', 'running', 'retrying');
+
+CREATE TABLE IF NOT EXISTS attempts (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number >= 1),
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    http_status INTEGER,
+    error TEXT,
+    output TEXT,
+    PRIMARY KEY (run_id, number)
 );
 
--- ============================================================
--- TABLE: retry_queue
--- ============================================================
-CREATE TABLE IF NOT EXISTS retry_queue (
-    id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
-    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    attempt_number INTEGER NOT NULL,
-    scheduled_for TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','success','failed','exhausted')),
-    error_message TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    UNIQUE (execution_id, attempt_number)
-);
-
--- ============================================================
--- INDEXES
--- ============================================================
-CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON tasks(next_run_at) WHERE status = 'active' AND is_enabled = 1;
-CREATE INDEX IF NOT EXISTS idx_tasks_status_enabled ON tasks(status, is_enabled);
-CREATE INDEX IF NOT EXISTS idx_exec_task_scheduled ON executions(task_id, scheduled_for);
-CREATE INDEX IF NOT EXISTS idx_exec_status ON executions(status);
-CREATE INDEX IF NOT EXISTS idx_exec_next_retry ON executions(next_retry_at) WHERE status = 'failed';
-CREATE INDEX IF NOT EXISTS idx_retry_scheduled ON retry_queue(scheduled_for) WHERE status = 'pending';
-
--- ============================================================
--- VIEWS
--- ============================================================
+-- Monitoring views, adapted from the database team's design to the runtime model.
 CREATE VIEW IF NOT EXISTS v_task_stats AS
-SELECT
-    t.id AS task_id,
-    t.name,
-    t.status AS task_status,
-    t.next_run_at,
-    t.last_run_at,
-    COUNT(e.id) AS total_runs,
-    SUM(CASE WHEN e.status = 'success' THEN 1 ELSE 0 END) AS success_count,
-    SUM(CASE WHEN e.status = 'failed' THEN 1 ELSE 0 END) AS failure_count,
-    AVG(CASE WHEN e.status = 'success' THEN e.duration_ms END) AS avg_duration_ms,
-    MAX(e.scheduled_for) AS last_execution_at
-FROM tasks t
-LEFT JOIN executions e ON e.task_id = t.id
+SELECT t.id AS task_id, t.name, t.enabled, t.next_run_at,
+       COUNT(r.id) AS total_runs,
+       COALESCE(SUM(CASE WHEN r.status = 'succeeded' THEN 1 ELSE 0 END), 0) AS success_count,
+       COALESCE(SUM(CASE WHEN r.status = 'failed' THEN 1 ELSE 0 END), 0) AS failure_count,
+       MAX(r.started_at) AS last_execution_at
+FROM tasks t LEFT JOIN runs r ON r.task_id = t.id
 GROUP BY t.id;
 
--- Verify tables
--- SELECT name FROM sqlite_master WHERE type='table';
+CREATE VIEW IF NOT EXISTS v_failed_needing_retry AS
+SELECT id AS run_id, task_id, attempt_count, next_attempt_at, last_error
+FROM runs WHERE status = 'retrying';
+
+PRAGMA user_version = 2;

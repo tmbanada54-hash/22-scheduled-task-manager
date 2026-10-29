@@ -1,6 +1,8 @@
 # Scheduled Task Manager — Key Queries
 
-All queries tested on Postgres 14+ / Supabase.
+> **Archived design, not the running application.** This database-team document describes a PostgreSQL/Prisma prototype using `executions` and `retry_queue`. The integrated service uses SQLite `tasks`, `runs`, and `attempts`; see [the runtime database guide](README.md) and [API documentation](../README.md#api). PostgreSQL support and migration of prototype data are not implemented.
+
+These are proposed PostgreSQL queries and are not the runtime query contract.
 
 ---
 

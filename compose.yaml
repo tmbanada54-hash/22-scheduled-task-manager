@@ -1,0 +1,20 @@
+services:
+  tickwise:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      # Intended for a local TLS reverse proxy. Do not expose an unprotected API.
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in the environment or a root .env file}
+      DATABASE_PATH: /data/tasks.sqlite3
+      SCHEDULER_ENABLED: "true"
+      ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
+      ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
+    volumes:
+      - tickwise-data:/data
+    restart: unless-stopped
+
+volumes:
+  tickwise-data:

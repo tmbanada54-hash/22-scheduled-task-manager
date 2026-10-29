@@ -1,3 +1,6 @@
+// ARCHIVED POSTGRESQL PROTOTYPE ONLY. The running application does not use Prisma.
+// This model is incompatible with the canonical SQLite runtime schema.
+
 // Prisma schema equivalent (optional — if team uses Prisma)
 // Place as prisma/schema.prisma and run: npx prisma migrate dev
 

@@ -1090,3 +1090,17 @@ code {
   }
   .monitor { transform: none; }
 }
+
+/* Pagination for the real, server-backed task list. */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--muted, #9aa5b5);
+}
+.pagination[hidden] { display: none; }
+
+.modal__pagination { margin: 0 1.25rem 1rem; }
