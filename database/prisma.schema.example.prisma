@@ -1,0 +1,93 @@
+// Prisma schema equivalent (optional — if team uses Prisma)
+// Place as prisma/schema.prisma and run: npx prisma migrate dev
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Task {
+  id                  String      @id @default(uuid()) @db.Uuid
+  name                String      @db.VarChar(255)
+  description         String?
+  taskType            String      @map("task_type") @db.VarChar(50) // webhook, http, command, email, custom
+  payload             Json        @default("{}")
+  scheduleType        String      @map("schedule_type") @db.VarChar(20) // cron, interval, once
+  cronExpression      String?     @map("cron_expression") @db.VarChar(100)
+  intervalSeconds     Int?        @map("interval_seconds")
+  runOnceAt           DateTime?   @map("run_once_at") @db.Timestamptz
+  timezone            String      @default("UTC") @db.VarChar(50)
+  nextRunAt           DateTime?   @map("next_run_at") @db.Timestamptz
+  lastRunAt           DateTime?   @map("last_run_at") @db.Timestamptz
+  status              String      @default("active") @db.VarChar(20)
+  isEnabled           Boolean     @default(true) @map("is_enabled")
+  maxRetries          Int         @default(3) @map("max_retries")
+  retryStrategy       String      @default("exponential") @map("retry_strategy") @db.VarChar(20)
+  retryDelaySeconds   Int         @default(60) @map("retry_delay_seconds")
+  timeoutSeconds      Int         @default(300) @map("timeout_seconds")
+  concurrencyPolicy   String      @default("skip") @map("concurrency_policy") @db.VarChar(20)
+  tags                String[]    @db.VarChar(255)
+  priority            Int         @default(0)
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy           String?     @map("created_by")
+
+  executions          Execution[]
+  retryQueue          RetryQueue[]
+
+  @@index([nextRunAt], map: "idx_tasks_next_run")
+  @@index([status, isEnabled])
+  @@map("tasks")
+}
+
+model Execution {
+  id                  String      @id @default(uuid()) @db.Uuid
+  taskId              String      @map("task_id") @db.Uuid
+  task                Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  scheduledFor        DateTime    @map("scheduled_for") @db.Timestamptz
+  startedAt           DateTime?   @map("started_at") @db.Timestamptz
+  finishedAt          DateTime?   @map("finished_at") @db.Timestamptz
+  status              String      @default("pending") @db.VarChar(20)
+  attemptNumber       Int         @default(1) @map("attempt_number")
+  durationMs          Int?        @map("duration_ms")
+  resultOutput        String?     @map("result_output")
+  errorMessage        String?     @map("error_message")
+  httpStatusCode      Int?        @map("http_status_code")
+  metadata            Json?       @default("{}")
+  parentExecutionId   String?     @map("parent_execution_id") @db.Uuid
+  parent              Execution?  @relation("RetryChain", fields: [parentExecutionId], references: [id], onDelete: SetNull)
+  children            Execution[] @relation("RetryChain")
+  isRetry             Boolean     @default(false) @map("is_retry")
+  nextRetryAt         DateTime?   @map("next_retry_at") @db.Timestamptz
+  triggeredBy         String      @default("schedule") @map("triggered_by") @db.VarChar(20)
+  workerId            String?     @map("worker_id")
+  logs                String?
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  retryQueue          RetryQueue[]
+
+  @@index([taskId, scheduledFor])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@map("executions")
+}
+
+model RetryQueue {
+  id              String    @id @default(uuid()) @db.Uuid
+  executionId     String    @map("execution_id") @db.Uuid
+  execution       Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  taskId          String    @map("task_id") @db.Uuid
+  task            Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  attemptNumber   Int       @map("attempt_number")
+  scheduledFor    DateTime  @map("scheduled_for") @db.Timestamptz
+  status          String    @default("pending") @db.VarChar(20)
+  errorMessage    String?   @map("error_message")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([executionId, attemptNumber])
+  @@map("retry_queue")
+}

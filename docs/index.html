@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scheduled Task Manager — Database Docs</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family: Inter, -apple-system, sans-serif; background:#0f1115; color:#e6e8eb; line-height:1.6}
+  header{background: linear-gradient(135deg,#1a1f2e 0%,#1e3a5f 100%); padding:32px 24px; border-bottom:1px solid #2a3441}
+  header h1{font-size:28px; letter-spacing:-0.5px}
+  header p{color:#9aa4b2; margin-top:8px; font-size:15px}
+  .badge{display:inline-block; background:#1e3a5f; border:1px solid #2a5a8a; color:#7cc4ff; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600; margin-right:8px; margin-top:12px}
+  .container{max-width:1100px; margin:0 auto; padding:24px}
+  .grid{display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin:20px 0}
+  .card{background:#171a21; border:1px solid #252b36; border-radius:12px; padding:20px}
+  .card h3{font-size:13px; text-transform:uppercase; letter-spacing:0.8px; color:#7cc4ff; margin-bottom:12px}
+  .card h2{font-size:16px; margin-bottom:8px}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{text-align:left; color:#9aa4b2; font-weight:600; padding:8px 6px; border-bottom:1px solid #252b36; font-size:11px; text-transform:uppercase; letter-spacing:0.5px}
+  td{padding:8px 6px; border-bottom:1px solid #1c212b; color:#d0d6dd}
+  td code{color:#7cc4ff}
+  code{background:#1e232e; padding:2px 6px; border-radius:4px; font-size:12px}
+  pre{background:#0d0f14; border:1px solid #252b36; padding:16px; border-radius:8px; overflow:auto; font-size:12px; color:#cbd5e1; margin:12px 0}
+  .er{display:flex; gap:16px; justify-content:center; margin:20px 0; flex-wrap:wrap}
+  .tbl{background:#171a21; border:1px solid #2a3441; border-radius:12px; overflow:hidden; min-width:280px; flex:1}
+  .tbl-header{padding:14px 16px; font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center}
+  .tbl-header.tasks{background: linear-gradient(135deg,#1e3a5f,#2a5a8a); color:white}
+  .tbl-header.exec{background: linear-gradient(135deg,#5f1e3a,#8a2a5a); color:white}
+  .tbl-header.retry{background: linear-gradient(135deg,#3a5f1e,#5a8a2a); color:white}
+  .tbl-body{padding:10px 0}
+  .field{display:flex; justify-content:space-between; padding:6px 16px; font-size:12px; border-bottom:1px solid #1c212b}
+  .field span:first-child{color:#e6e8eb; font-weight:600}
+  .field span:last-child{color:#9aa4b2}
+  .pk{color:#f59e0b !important}
+  .fk{color:#7cc4ff !important}
+  .arrow{font-size:28px; color:#3a4556; display:flex; align-items:center}
+  .stats{display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin:16px 0}
+  .stat{background:#171a21; border:1px solid #252b36; border-radius:10px; padding:14px; text-align:center}
+  .stat b{font-size:20px; display:block; color:white}
+  .stat span{font-size:11px; color:#9aa4b2; text-transform:uppercase; letter-spacing:0.5px}
+  .success{color:#34d399 !important} .failed{color:#f87171 !important} .running{color:#fbbf24 !important}
+  .flow{display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; margin:16px 0}
+  .flow .node{padding:8px 14px; border-radius:20px; font-size:12px; font-weight:600; border:1px solid #2a3441}
+  .flow .pending{background:#1e293b; color:#94a3b8}
+  .flow .run{background:#422006; color:#fbbf24; border-color:#92400e}
+  .flow .ok{background:#052e16; color:#34d399; border-color:#166534}
+  .flow .fail{background:#450a0a; color:#f87171; border-color:#991b1b}
+  a{color:#7cc4ff; text-decoration:none}
+  footer{padding:24px; text-align:center; color:#6b7280; font-size:12px; border-top:1px solid #1c212b; margin-top:32px}
+  @media(max-width:700px){.grid{grid-template-columns:1fr} .stats{grid-template-columns:1fr 1fr} .er{flex-direction:column} .arrow{transform:rotate(90deg)}}
+</style>
+</head>
+<body>
+<header>
+  <div style="max-width:1100px; margin:0 auto">
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
+      <div style="background:#7cc4ff; color:#0f1115; padding:4px 10px; border-radius:6px; font-weight:800; font-size:12px">DATABASE</div>
+      <span style="color:#5a6678; font-size:13px">branch: database ← develop</span>
+    </div>
+    <h1>Scheduled Task Manager — Database MVP</h1>
+    <p>Schedule tasks • Display next execution times • Record outcomes • Retry failed executions</p>
+    <span class="badge">PostgreSQL 14+ / Supabase / Neon</span>
+    <span class="badge">SQLite fallback</span>
+    <span class="badge">3 tables + 3 views + triggers</span>
+    <span class="badge">Seeded with 6 demo tasks</span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Stats preview -->
+  <div class="stats">
+    <div class="stat"><b>6</b><span>Tasks Seeded</span></div>
+    <div class="stat"><b>11</b><span>Executions</span></div>
+    <div class="stat"><b class="success">7 success</b><span>in seed data</span></div>
+    <div class="stat"><b class="failed">3 failed</b><span>for retry demo</span></div>
+  </div>
+
+  <!-- ER -->
+  <div class="card">
+    <h3>Entity Relationship — Core Model</h3>
+    <div class="er">
+      <div class="tbl">
+        <div class="tbl-header tasks"><span>tasks</span><span>★ Core</span></div>
+        <div class="tbl-body">
+          <div class="field"><span class="pk">id PK UUID</span><span>gen_random_uuid()</span></div>
+          <div class="field"><span>name</span><span>VARCHAR(255)</span></div>
+          <div class="field"><span>task_type</span><span>webhook / http / command</span></div>
+          <div class="field"><span>payload</span><span>JSONB</span></div>
+          <div class="field"><span>schedule_type</span><span>cron / interval / once</span></div>
+          <div class="field"><span>cron_expression</span><span>VARCHAR(100)</span></div>
+          <div class="field"><span>interval_seconds</span><span>INT</span></div>
+          <div class="field"><span>run_once_at</span><span>TIMESTAMPTZ</span></div>
+          <div class="field"><span style="color:#34d399">next_run_at</span><span>Indexed ★</span></div>
+          <div class="field"><span>last_run_at</span><span>TIMESTAMPTZ</span></div>
+          <div class="field"><span>status</span><span>active/paused/disabled</span></div>
+          <div class="field"><span>max_retries</span><span>0-10 (def 3)</span></div>
+          <div class="field"><span>retry_strategy</span><span>exponential / fixed</span></div>
+          <div class="field"><span>timeout_seconds</span><span>INT</span></div>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="tbl">
+        <div class="tbl-header exec"><span>executions</span><span>1 — ∞</span></div>
+        <div class="tbl-body">
+          <div class="field"><span class="pk">id PK UUID</span><span></span></div>
+          <div class="field"><span class="fk">task_id FK → tasks</span><span>CASCADE</span></div>
+          <div class="field"><span>scheduled_for</span><span>TIMESTAMPTZ</span></div>
+          <div class="field"><span>started_at / finished_at</span><span></span></div>
+          <div class="field"><span>status</span><span>pending→running→success/failed</span></div>
+          <div class="field"><span>attempt_number</span><span>1..n</span></div>
+          <div class="field"><span>duration_ms</span><span>auto trigger</span></div>
+          <div class="field"><span>result_output</span><span>TEXT</span></div>
+          <div class="field"><span>error_message</span><span>TEXT</span></div>
+          <div class="field"><span class="fk">parent_execution_id</span><span>retry chain</span></div>
+          <div class="field"><span>is_retry</span><span>BOOL</span></div>
+          <div class="field"><span>next_retry_at</span><span>TIMESTAMPTZ</span></div>
+          <div class="field"><span>triggered_by</span><span>schedule/manual/retry</span></div>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="tbl">
+        <div class="tbl-header retry"><span>retry_queue</span><span>optional</span></div>
+        <div class="tbl-body">
+          <div class="field"><span class="pk">id PK UUID</span><span></span></div>
+          <div class="field"><span class="fk">execution_id FK</span><span></span></div>
+          <div class="field"><span class="fk">task_id FK</span><span></span></div>
+          <div class="field"><span>attempt_number</span><span>INT</span></div>
+          <div class="field"><span>scheduled_for</span><span>TIMESTAMPTZ</span></div>
+          <div class="field"><span>status</span><span>pending/processing</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="background:#1a1f2e; padding:12px; border-radius:8px; margin-top:12px; font-size:12px; color:#9aa4b2">
+      <b style="color:white">Views:</b> <code>v_task_latest_execution</code> • <code>v_task_stats</code> (dashboard cards) • <code>v_failed_needing_retry</code> (retry worker)
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Key Query — Scheduler (Hot Path)</h3>
+      <p style="font-size:12px; color:#9aa4b2; margin-bottom:8px">Runs every 15-30s, uses partial index <code>idx_tasks_next_run</code></p>
+      <pre>SELECT id, name, payload
+FROM tasks
+WHERE status='active'
+  AND is_enabled = TRUE
+  AND next_run_at <= NOW()
+ORDER BY priority DESC, next_run_at ASC
+LIMIT 100
+FOR UPDATE SKIP LOCKED;</pre>
+    </div>
+    <div class="card">
+      <h3>Dashboard — Next 5 Runs</h3>
+      <table>
+        <tr><th>Task</th><th>Schedule</th><th>Next Run</th></tr>
+        <tr><td>Heartbeat Ping</td><td><code>* * * * *</code></td><td style="color:#34d399">in 1 min</td></tr>
+        <tr><td>Unstable Sync</td><td><code>*/2 * * * *</code></td><td>in 2 min</td></tr>
+        <tr><td>Sync Inventory</td><td>every 30s</td><td style="color:#fbbf24">running</td></tr>
+        <tr><td>Daily Report</td><td><code>0 9 * * *</code></td><td>tomorrow 09:00 WAT</td></tr>
+        <tr><td>Black Friday Launch</td><td>once</td><td>2026-11-28</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Execution Lifecycle — With Retries</h3>
+    <div class="flow">
+      <span class="node pending">pending</span> <span style="color:#3a4556">→</span>
+      <span class="node run">running</span> <span style="color:#3a4556">→</span>
+      <span class="node ok">success ✓</span>
+      <span style="color:#3a4556; margin:0 8px">or</span>
+      <span class="node fail">failed ✗</span> <span style="color:#3a4556">→</span>
+      <span class="node pending">retry in 60s (×2 exponential)</span> <span style="color:#3a4556">→</span>
+      <span class="node pending">pending (attempt 2)</span>
+    </div>
+    <pre>-- Retry chain via parent_execution_id
+-- execution #1 (failed, attempt 1, is_retry=false)
+--   └─► execution #2 (success, attempt 2, is_retry=true, parent=exec #1)
+
+UPDATE executions SET status='failed', next_retry_at=NOW() + retry_delay * POWER(2, attempt-1) WHERE id=$1;
+INSERT INTO executions (task_id, attempt_number, parent_execution_id, is_retry, triggered_by)
+VALUES ($taskId, 2, $parentId, true, 'retry');</pre>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>What This Branch Delivers</h3>
+      <table>
+        <tr><th>File</th><th>Purpose</th></tr>
+        <tr><td><code>schema.sql</code></td><td>Postgres main schema (production)</td></tr>
+        <tr><td><code>schema.sqlite.sql</code></td><td>SQLite fallback (local/D1)</td></tr>
+        <tr><td><code>seed.sql</code></td><td>6 tasks + 11 executions</td></tr>
+        <tr><td><code>QUERIES.md</code></td><td>Scheduler / dashboard / retry queries</td></tr>
+        <tr><td><code>prisma.schema.example</code></td><td>Prisma-ready if team uses it</td></tr>
+        <tr><td><code>api-contract.md</code></td><td>Endpoints → DB mapping</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Validation & Edge Cases</h3>
+      <table>
+        <tr><th>Edge Case</th><th>Handled By</th></tr>
+        <tr><td>Invalid cron</td><td>Regex CHECK + app <code>cron-validator</code></td></tr>
+        <tr><td>Still running at next tick</td><td><code>concurrency_policy=skip</code></td></tr>
+        <tr><td>Scheduler down / missed run</td><td><code>overdue_by</code> query + catch-up</td></tr>
+        <tr><td>Retry exhausted</td><td><code>max_retries ≤10</code></td></tr>
+        <tr><td>Timeout hang</td><td><code>timeout_seconds</code> + worker kill</td></tr>
+        <tr><td>Task deleted, keep history?</td><td>Soft-delete <code>archived</code></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="color:#7cc4ff">Setup — 3 Commands</h3>
+    <pre>psql $DATABASE_URL -f database/schema.sql   # create tables, indexes, views, triggers
+psql $DATABASE_URL -f database/seed.sql     # load 6 demo tasks + history
+psql $DATABASE_URL -c "SELECT * FROM v_task_stats ORDER BY next_run_at;"  # verify</pre>
+    <p style="font-size:12px; color:#9aa4b2">Supabase: Settings → Database → Connection String → paste as DATABASE_URL. Neon: same. Local: <code>docker run postgres:15</code>.</p>
+  </div>
+
+  <div class="card" style="border:1px solid #1e3a5f; background: linear-gradient(135deg,#171a21, #1a1f2e)">
+    <h3>Demo Script (for live presentation)</h3>
+    <p style="font-size:13px; color:#d0d6dd"><em>"Our database has two core tables: <b>tasks</b> — what to run and when — and <b>executions</b> — an immutable log of every attempt. The scheduler polls <code>WHERE next_run_at &lt;= NOW()</code> using a partial index, so it's fast even with thousands of tasks. When a webhook fails, we mark the execution <b>failed</b> and schedule a retry with exponential backoff — <code>delay × 2^(attempt-1)</code> — linked via <code>parent_execution_id</code> so you can see the full chain in the UI. Views like <b>v_task_stats</b> power the dashboard without extra app logic."</em></p>
+  </div>
+
+</div>
+
+<footer>
+  Branch <b>database</b> from <b>develop</b> • Scheduled Task Manager MVP • Supabase / Neon / Railway ready • Team: Scheduler / Task Runner / Persistence / UI
+</footer>
+</body>
+</html>
